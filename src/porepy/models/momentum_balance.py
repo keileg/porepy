@@ -473,6 +473,11 @@ class MomentumBalanceEquations(pp.BalanceEquation):
         )
 
 
+class ThreeFieldMomentumBalanceEquations(MomentumBalanceEquations):
+    pass
+
+
+
 class ConstitutiveLawsMomentumBalance(
     constitutive_laws.ZeroGravityForce,
     constitutive_laws.ElasticModuli,
@@ -498,6 +503,32 @@ class ConstitutiveLawsMomentumBalance(
         """
         # Method from constitutive library's LinearElasticRock.
         return self.mechanical_stress(domains)
+
+class ConstitutiveLawsThreeFieldMomentumBalance(
+    constitutive_laws.ZeroGravityForce,
+    constitutive_laws.ElasticModuli,
+    constitutive_laws.LinearElasticMechanicalStress,
+    constitutive_laws.ConstantSolidDensity,
+    constitutive_laws.FractureGap,
+    constitutive_laws.FrictionBound,
+    constitutive_laws.DimensionReduction,
+):
+
+    def stress(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
+        """Stress operator.
+
+        Parameters:
+            subdomains: List of subdomains where the stress is defined.
+
+        Returns:
+            Operator for the stress.
+
+        """
+        # Method from constitutive library's LinearElasticRock.
+        return self.mechanical_stress(domains)
+
+    def stress_discretization(self) -> pp.ad.TpsaAd:
+        return 
 
 
 class VariablesMomentumBalance:
