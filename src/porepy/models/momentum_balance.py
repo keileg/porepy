@@ -474,8 +474,32 @@ class MomentumBalanceEquations(pp.BalanceEquation):
 
 
 class ThreeFieldMomentumBalanceEquations(MomentumBalanceEquations):
-    pass
 
+    def set_equations(self) -> None:
+        super().set_equations()
+
+        # Additional equations for conservation of angular momentum and solid mass
+        matrix_subdomains = self.mdg.subdomains(dim=self.nd)
+
+        discr = self.stress_discretization(matrix_subdomains)
+
+        # Conservation of angular momentum
+        displacement = self.displacement(matrix_subdomains)
+        rotation_stress = discr.displacent_rotation() @ displacement
+        # TODO: Cosserat model
+        rotation_stress.set_name("rotation_stress")
+
+        # Conservation of solid mass
+        volumetric_strain = self.volumetric_strain(matrix_subdomains)
+
+        solid_mass = discr.displacement_pressure() @ displacement + discr.pressure_pressure() @ volumetric_strain
+
+        solid_mass.set_name("solid_mass")
+
+        rotation_dim = 1 if self.nd == 2 else 3
+
+        self.equation_system.set_equation(rotation_stress, matrix_subdomains, {"cells": rotation_dim})
+        self.equation_system.set_equation(solid_mass, matrix_subdomains, {"cells": 1})
 
 
 class ConstitutiveLawsMomentumBalance(
@@ -514,8 +538,9 @@ class ConstitutiveLawsThreeFieldMomentumBalance(
     constitutive_laws.DimensionReduction,
 ):
 
-    def stress(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
-        """Stress operator.
+    def mechanical_stress(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
+        """override the definition of mechanical stress in the constitutive laws. This
+        will be inherited into the poromechanics model.
 
         Parameters:
             subdomains: List of subdomains where the stress is defined.
@@ -524,11 +549,15 @@ class ConstitutiveLawsThreeFieldMomentumBalance(
             Operator for the stress.
 
         """
-        # Method from constitutive library's LinearElasticRock.
-        return self.mechanical_stress(domains)
+        discr = self.strain_discretization(domains)
 
-    def stress_discretization(self) -> pp.ad.TpsaAd:
-        return 
+        stress = (discr.stress() @ self.displacement(domains) + 
+                discr.rotation_stress() @ self.rotation(domains) +
+                discr.pressure_stress() @ self.volumetric_strain(domains)
+        )
+
+    def stress_discretization(self, subdomains: list[pp.Grid]) -> pp.ad.TpsaAd:
+        return pp.ad.TpsaAd(self.stress_keyword, subodmains)
 
 
 class VariablesMomentumBalance:
@@ -688,6 +717,39 @@ class VariablesMomentumBalance:
 
         return self.equation_system.md_variable(
             self.contact_traction_variable, subdomains
+        )
+
+
+class VariablesThreeFieldMomentumBalance(VariablesMomentumBalance):
+
+    def create_variables(self) -> None:
+        super().create_variables()
+
+        matrix_subdomains = self.mdg.subdomains(dim=self.nd)
+
+        rotation_dim = 1 if self.nd == 2 else 3
+
+        self.equation_system.create_variables(
+            dof_info={"cells": rotation_dim},
+            name=self.rotation_variable,
+            subdomains=matrix_subdomains,
+            tags={"si_units": "rad"},
+        )
+        self.equation_system.create_variables(
+            dof_info={"cells": 1},
+            name=self.volumetric_strain_variable,
+            subdomains=matrix_subdomains,
+            tags={"si_units": "1"},
+        )
+
+    def rotation(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
+        return self.equation_system.md_variable(
+            self.rotation_variable, subdomains
+        )
+
+    def volumetric_strain(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
+        return self.equation_system.md_variable(
+            self.volumetric_strain_variable, subdomains
         )
 
 
@@ -912,6 +974,46 @@ class SolutionStrategyMomentumBalance(pp.SolutionStrategy):
         if e.g. parameter nonlinearities are included.
         """
         return self.mdg.dim_min() < self.nd
+
+class SolutionStrategyMomentumBalanceThreeField(SolutionStrategyMomentumBalance):
+
+    def __init__(self, params: Optional[dict] = None) -> None:
+        super().__init__(params)
+
+        self.rotation_variable: str = "rotation"
+        """Name of the rotation variable."""
+
+        self.volumetric_strain: str = "volumetric_strain"
+        """Name of the volumetric strain variable."""
+
+    def initial_condition(self):
+        super().initial_condition()
+
+        # Initial guess for rotation and volumetric strain
+        num_cells = sum(
+            sd.num_cells for sd in self.mdg.subdomains(dim=self.nd)
+        )
+
+        rotation_dims = 1 if self.nd == 2 else 3
+
+        rotation_vals = np.zeros((rotation_dims, num_cells)).ravel("F")
+        self.equation_system.set_variable_values(
+            rotation_vals,
+            [self.rotation_variable],
+            time_step_index=0,
+            iterate_index=0,
+        )
+
+        volumetric_strain_vals = np.zeros(num_cells)
+
+
+        self.equation_system.set_variable_values(
+            volumetric_strain_vals,
+            [self.volumetric_strain],
+            time_step_index=0,
+            iterate_index=0,
+        )
+
 
 
 class BoundaryConditionsMomentumBalance(pp.BoundaryConditionMixin):
