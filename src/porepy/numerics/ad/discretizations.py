@@ -35,6 +35,7 @@ __all__ = [
     "Discretization",
     "BiotAd",
     "MpsaAd",
+    "TpsaAd",
     "MpfaAd",
     "TpfaAd",
     "UpwindAd",
