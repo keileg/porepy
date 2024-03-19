@@ -197,14 +197,22 @@ class ThreeFieldMomentumBalanceEquations(MomentumBalanceEquations):
 
         # Conservation of angular momentum
         displacement = self.displacement(matrix_subdomains)
-        rotation_stress = discr.displacent_rotation() @ displacement
+
+        if self.nd == 2:
+            div_rot = pp.ad.Divergence(matrix_subdomains, 1)
+            div_mass = div_rot
+        else:
+            div_rot = pp.ad.Divergence(matrix_subdomains, self.nd)
+            div_mass = pp.ad.Divergence(matrix_subdomains, 1)
+        
+
+        rotation_stress = div_rot @ discr.rotation_displacement() @ displacement
         # TODO: Cosserat model
         rotation_stress.set_name("rotation_stress")
 
         # Conservation of solid mass
         volumetric_strain = self.volumetric_strain(matrix_subdomains)
-
-        solid_mass = discr.displacement_pressure() @ displacement + discr.pressure_pressure() @ volumetric_strain
+        solid_mass = div_mass @ (discr.mass_displacement() @ displacement + discr.mass_volumetric_strain() @ volumetric_strain)
 
         solid_mass.set_name("solid_mass")
 
@@ -256,15 +264,16 @@ class ConstitutiveLawsThreeFieldMomentumBalance(
             Operator for the stress.
 
         """
-        discr = self.strain_discretization(domains)
+        discr = self.stress_discretization(domains)
 
-        stress = (discr.stress() @ self.displacement(domains) + 
-                discr.rotation_stress() @ self.rotation(domains) +
-                discr.pressure_stress() @ self.volumetric_strain(domains)
+        stress = (discr.stress_displacement() @ self.displacement(domains) + 
+                discr.stress_rotation() @ self.rotation(domains) +
+                discr.stress_volumetric_strain() @ self.volumetric_strain(domains)
         )
+        return stress
 
     def stress_discretization(self, subdomains: list[pp.Grid]) -> pp.ad.TpsaAd:
-        return pp.ad.TpsaAd(self.stress_keyword, subodmains)
+        return pp.ad.TpsaAd(self.stress_keyword, subdomains)
 
 
 class VariablesMomentumBalance(VariableMixin):
@@ -401,12 +410,12 @@ class VariablesThreeFieldMomentumBalance(VariablesMomentumBalance):
 
     def rotation(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
         return self.equation_system.md_variable(
-            self.rotation_variable, subdomains
+            self.rotation_variable, domains
         )
 
     def volumetric_strain(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
         return self.equation_system.md_variable(
-            self.volumetric_strain_variable, subdomains
+            self.volumetric_strain_variable, domains
         )
 
 
@@ -495,7 +504,7 @@ class SolutionStrategyMomentumBalanceThreeField(SolutionStrategyMomentumBalance)
         self.rotation_variable: str = "rotation"
         """Name of the rotation variable."""
 
-        self.volumetric_strain: str = "volumetric_strain"
+        self.volumetric_strain_variable: str = "volumetric_strain"
         """Name of the volumetric strain variable."""
 
     def initial_condition(self):
@@ -518,10 +527,9 @@ class SolutionStrategyMomentumBalanceThreeField(SolutionStrategyMomentumBalance)
 
         volumetric_strain_vals = np.zeros(num_cells)
 
-
         self.equation_system.set_variable_values(
             volumetric_strain_vals,
-            [self.volumetric_strain],
+            [self.volumetric_strain_variable],
             time_step_index=0,
             iterate_index=0,
         )
