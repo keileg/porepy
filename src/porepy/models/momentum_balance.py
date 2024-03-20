@@ -486,13 +486,19 @@ class ThreeFieldMomentumBalanceEquations(MomentumBalanceEquations):
         # Conservation of angular momentum
         displacement = self.displacement(matrix_subdomains)
 
+        rotation_dim = 1 if self.nd == 2 else 3
+
+        stiffness = self.stiffness_tensor(matrix_subdomains[0])
+        inv_lmbda = pp.ad.DenseArray(1 / stiffness.lmbda)
+
         if self.nd == 2:
             div_rot = pp.ad.Divergence(matrix_subdomains, 1)
             div_mass = div_rot
+            inv_mu = pp.ad.DenseArray(1 / stiffness.mu)
         else:
             div_rot = pp.ad.Divergence(matrix_subdomains, self.nd)
             div_mass = pp.ad.Divergence(matrix_subdomains, 1)
-        
+            inv_mu = pp.ad.DenseArray(1 / np.repeat(stiffness.mu, self.nd))
 
         rotation_stress = div_rot @ discr.rotation_displacement() @ displacement
         # TODO: Cosserat model
@@ -500,13 +506,19 @@ class ThreeFieldMomentumBalanceEquations(MomentumBalanceEquations):
 
         # Conservation of solid mass
         volumetric_strain = self.volumetric_strain(matrix_subdomains)
-        solid_mass = div_mass @ (discr.mass_displacement() @ displacement + discr.mass_volumetric_strain() @ volumetric_strain)
+        rotation = self.rotation(matrix_subdomains)
+        solid_mass = (div_mass @ (
+            discr.mass_displacement() @ displacement
+            + discr.mass_volumetric_strain() @ volumetric_strain
+        ) - self.volume_integral(inv_mu * rotation, matrix_subdomains, dim=rotation_dim)
+        - self.volume_integral(inv_lmbda * volumetric_strain, matrix_subdomains, dim=1)
+        )
 
         solid_mass.set_name("solid_mass")
 
-        rotation_dim = 1 if self.nd == 2 else 3
-
-        self.equation_system.set_equation(rotation_stress, matrix_subdomains, {"cells": rotation_dim})
+        self.equation_system.set_equation(
+            rotation_stress, matrix_subdomains, {"cells": rotation_dim}
+        )
         self.equation_system.set_equation(solid_mass, matrix_subdomains, {"cells": 1})
 
 
@@ -536,6 +548,7 @@ class ConstitutiveLawsMomentumBalance(
         # Method from constitutive library's LinearElasticRock.
         return self.mechanical_stress(domains)
 
+
 class ConstitutiveLawsThreeFieldMomentumBalance(
     constitutive_laws.ZeroGravityForce,
     constitutive_laws.ElasticModuli,
@@ -559,9 +572,10 @@ class ConstitutiveLawsThreeFieldMomentumBalance(
         """
         discr = self.stress_discretization(domains)
 
-        stress = (discr.stress_displacement() @ self.displacement(domains) + 
-                discr.stress_rotation() @ self.rotation(domains) +
-                discr.stress_volumetric_strain() @ self.volumetric_strain(domains)
+        stress = (
+            discr.stress_displacement() @ self.displacement(domains)
+            + discr.stress_rotation() @ self.rotation(domains)
+            + discr.stress_volumetric_strain() @ self.volumetric_strain(domains)
         )
         return stress
 
@@ -752,9 +766,7 @@ class VariablesThreeFieldMomentumBalance(VariablesMomentumBalance):
         )
 
     def rotation(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
-        return self.equation_system.md_variable(
-            self.rotation_variable, domains
-        )
+        return self.equation_system.md_variable(self.rotation_variable, domains)
 
     def volumetric_strain(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
         return self.equation_system.md_variable(
@@ -984,6 +996,7 @@ class SolutionStrategyMomentumBalance(pp.SolutionStrategy):
         """
         return self.mdg.dim_min() < self.nd
 
+
 class SolutionStrategyMomentumBalanceThreeField(SolutionStrategyMomentumBalance):
 
     def __init__(self, params: Optional[dict] = None) -> None:
@@ -999,9 +1012,7 @@ class SolutionStrategyMomentumBalanceThreeField(SolutionStrategyMomentumBalance)
         super().initial_condition()
 
         # Initial guess for rotation and volumetric strain
-        num_cells = sum(
-            sd.num_cells for sd in self.mdg.subdomains(dim=self.nd)
-        )
+        num_cells = sum(sd.num_cells for sd in self.mdg.subdomains(dim=self.nd))
 
         rotation_dims = 1 if self.nd == 2 else 3
 
@@ -1021,7 +1032,6 @@ class SolutionStrategyMomentumBalanceThreeField(SolutionStrategyMomentumBalance)
             time_step_index=0,
             iterate_index=0,
         )
-
 
 
 class BoundaryConditionsMomentumBalance(pp.BoundaryConditionMixin):
