@@ -500,18 +500,24 @@ class ThreeFieldMomentumBalanceEquations(MomentumBalanceEquations):
             div_mass = pp.ad.Divergence(matrix_subdomains, 1)
             inv_mu = pp.ad.DenseArray(1 / np.repeat(stiffness.mu, self.nd))
 
-        rotation_stress = div_rot @ discr.rotation_displacement() @ displacement
+        rotation = self.rotation(matrix_subdomains)
+        rotation_stress = (
+            (div_rot @ discr.rotation_displacement() @ displacement)
+            - self.volume_integral(
+                inv_mu * rotation, matrix_subdomains, dim=rotation_dim
+            )
+            - self.source_rotation(matrix_subdomains)
+        )
         # TODO: Cosserat model
         rotation_stress.set_name("rotation_stress")
 
         # Conservation of solid mass
         volumetric_strain = self.volumetric_strain(matrix_subdomains)
-        rotation = self.rotation(matrix_subdomains)
-        solid_mass = (div_mass @ (
+        solid_mass = div_mass @ (
             discr.mass_displacement() @ displacement
             + discr.mass_volumetric_strain() @ volumetric_strain
-        ) - self.volume_integral(inv_mu * rotation, matrix_subdomains, dim=rotation_dim)
-        - self.volume_integral(inv_lmbda * volumetric_strain, matrix_subdomains, dim=1)
+        ) - self.volume_integral(
+            inv_lmbda * volumetric_strain, matrix_subdomains, dim=1
         )
 
         solid_mass.set_name("solid_mass")
