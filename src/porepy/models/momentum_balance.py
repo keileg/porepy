@@ -503,6 +503,7 @@ class ThreeFieldMomentumBalanceEquations(MomentumBalanceEquations):
         rotation = self.rotation(matrix_subdomains)
         rotation_stress = (
             (div_rot @ discr.rotation_displacement() @ displacement)
+            + (div_rot @ discr.rotation_diffusion() @ rotation)
             - self.volume_integral(
                 inv_mu * rotation, matrix_subdomains, dim=rotation_dim
             )
@@ -518,7 +519,8 @@ class ThreeFieldMomentumBalanceEquations(MomentumBalanceEquations):
             + discr.mass_volumetric_strain() @ volumetric_strain
         ) - self.volume_integral(
             inv_lmbda * volumetric_strain, matrix_subdomains, dim=1
-        )
+        ) - self.source_solid_pressure(matrix_subdomains)
+        
 
         solid_mass.set_name("solid_mass")
 
