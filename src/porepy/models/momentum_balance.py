@@ -501,10 +501,10 @@ class ThreeFieldMomentumBalanceEquations(MomentumBalanceEquations):
             inv_mu = pp.ad.DenseArray(1 / np.repeat(stiffness.mu, self.nd))
 
         rotation = self.rotation(matrix_subdomains)
-        couple_stress = self.couple_stress(matrix_subdomains)
+        total_rotation = self.total_rotation(matrix_subdomains)
+        #couple_stress = self.couple_stress(matrix_subdomains)
         rotation_stress = (
-            div_rot @ (discr.rotation_displacement() @ self.displacement(matrix_subdomains)
-            + couple_stress)
+            div_rot @ total_rotation
             - self.volume_integral(
                 inv_mu * rotation, matrix_subdomains, dim=rotation_dim
             )
@@ -605,6 +605,20 @@ class ConstitutiveLawsThreeFieldMomentumBalance(
         couple_stress = discr.rotation_diffusion() @ self.rotation(domains)
         return couple_stress
 
+    def total_rotation(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
+        """Total rotation operator.
+
+        Parameters:
+            subdomains: List of subdomains where the total rotation is defined.
+
+        Returns:
+            Operator for the total rotation.
+
+        """
+        discr = self.stress_discretization(domains)
+        couple_stress = self.couple_stress(domains)
+        return (discr.rotation_displacement() @ self.displacement(domains)
+            + couple_stress)
 
 class VariablesMomentumBalance:
     """Variables for mixed-dimensional deformation.
