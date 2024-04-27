@@ -558,15 +558,7 @@ class ConstitutiveLawsMomentumBalance(
         return self.mechanical_stress(domains)
 
 
-class ConstitutiveLawsThreeFieldMomentumBalance(
-    constitutive_laws.ZeroGravityForce,
-    constitutive_laws.ElasticModuli,
-    constitutive_laws.LinearElasticMechanicalStress,
-    constitutive_laws.ConstantSolidDensity,
-    constitutive_laws.FractureGap,
-    constitutive_laws.FrictionBound,
-    constitutive_laws.DimensionReduction,
-):
+class ConstitutiveLawsThreeFieldMomentumBalance:
 
     def mechanical_stress(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
         """override the definition of mechanical stress in the constitutive laws. This
