@@ -55,6 +55,9 @@ cover/
 .ipynb_checkpoints
 */.ipynb_checkpoints/*
 
+# Pickle (assuming standard formatting)
+*.pkl
+
 # Linux (ok)
 *~
 
