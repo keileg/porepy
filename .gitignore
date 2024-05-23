@@ -58,6 +58,10 @@ cover/
 # Pickle (assuming standard formatting)
 *.pkl
 
+# Numpy data files
+*.npy
+*.npz
+
 # Linux (ok)
 *~
 
