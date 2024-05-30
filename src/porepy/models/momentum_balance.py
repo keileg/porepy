@@ -227,9 +227,9 @@ class ThreeFieldMomentumBalanceEquations(MomentumBalanceEquations):
         total_rotation = self.total_rotation(subdomains)
 
         assert len(subdomains) == 1
-        bc_displacement = discr.bound_rotation_displacement() @ self.bc_values_rotation_displacement(subdomains[0])
-        bc_rotation = discr.bound_rotation_diffusion() @ self.bc_values_rotation_rotation(subdomains[0])
-        rotation_stress = div_rot @ total_rotation + bc_displacement + bc_rotation
+        bc_displacement = discr.bound_rotation_displacement() @ self.bc_values_displacement(subdomains[0])
+        bc_rotation = discr.bound_rotation_diffusion() @ self.bc_values_rotation(subdomains[0])
+        rotation_stress = div_rot @ (total_rotation + bc_displacement + bc_rotation)
 
         angular_momentum = (
             rotation_stress
@@ -250,7 +250,7 @@ class ThreeFieldMomentumBalanceEquations(MomentumBalanceEquations):
         div_mass = pp.ad.Divergence(subdomains, 1)
 
         assert len(subdomains) == 1
-        bc_displacement = discr.bound_mass_displacement() @ self.bc_values_mass_displacement(subdomains[0])
+        bc_displacement = discr.bound_mass_displacement() @ self.bc_values_displacement(subdomains[0])
         
         # Conservation of solid mass
         volumetric_strain = self.volumetric_strain(subdomains)
@@ -768,20 +768,7 @@ class BoundaryConditionsThreeFieldMomentumBalance(BoundaryConditionsMomentumBala
     rotation_variable: str
     volumetric_strain_variable: str
 
-    def bc_values_rotation_displacement(self, boundary_grid: pp.Grid) -> np.ndarray:
-        """Rotation values for the Dirichlet boundary condition.
-
-        Parameters:
-            boundary_grid: Boundary grid to evaluate values on.
-
-        Returns:
-            An array with shape (boundary_grid.num_cells,) containing the rotation values
-            on the provided boundary grid.
-
-        """
-        return np.zeros(boundary_grid.num_cells * self.nd)
-
-    def bc_values_rotation_rotation(self, boundary_grid: pp.Grid) -> np.ndarray:
+    def bc_values_rotation(self, boundary_grid: pp.Grid) -> np.ndarray:
         """Rotation values for the Dirichlet boundary condition.
 
         Parameters:
@@ -793,29 +780,16 @@ class BoundaryConditionsThreeFieldMomentumBalance(BoundaryConditionsMomentumBala
 
         """
         assert self.nd == 2, "Rotation is only implemented in 2D"
-        return np.zeros(boundary_grid.num_cells)
-
-    def bc_values_mass_displacement(self, boundary_grid: pp.Grid) -> np.ndarray:
-        """Volumetric strain values for the Dirichlet boundary condition.
-
-        Parameters:
-            boundary_grid: Boundary grid to evaluate values on.
-
-        Returns:
-            An array with shape (boundary_grid.num_cells,) containing the volumetric
-            strain values on the provided boundary grid.
-
-        """
-        return np.zeros(boundary_grid.num_cells * self.nd)
+        return np.zeros(boundary_grid.num_faces)
 
     def update_all_boundary_conditions(self) -> None:
         """Set values for the rotation and the volumetric strain on boundaries."""
         super().update_all_boundary_conditions()
-        self.update_boundary_condition(self.rotation_variable, self.bc_values_rotation_displacement)
-        self.update_boundary_condition(self.rotation_variable, self.bc_values_rotation_rotation)
-        self.update_boundary_condition(
-            self.volumetric_strain_variable, self.bc_values_mass_displacement
-        )
+        #self.update_boundary_condition(self.rotation_variable, self.bc_values_rotation_displacement)
+        #self.update_boundary_condition(self.rotation_variable, self.bc_values_rotation_rotation)
+        #self.update_boundary_condition(
+        #    self.volumetric_strain_variable, self.bc_values_mass_displacement
+        #)
 
 # Note that we ignore a mypy error here. There are some inconsistencies in the method
 # definitions of the mixins, related to the enforcement of keyword-only arguments. The
