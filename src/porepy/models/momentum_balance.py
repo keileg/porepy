@@ -640,14 +640,12 @@ class ConstitutiveLawsThreeFieldMomentumBalance:
         return pp.ad.TimeDependentDenseArray(
             name="inv_lambda",
             domains=self.mdg.subdomains(),
-            previous_timestep=True,
         )
 
     def inv_mu(self, subdomains):
         return pp.ad.TimeDependentDenseArray(
             name="inv_mu",
             domains=self.mdg.subdomains(),
-            previous_timestep=True,
         )
 
 
