@@ -74,7 +74,7 @@ class Mpsa(Discretization):
 
         """
         self.keyword = keyword
-        """Keyword used to identify the parameter dictionary. Defaults to 'mechanics'."""
+        """Keyword used to identify the parameter dictionary."""
         self.stress_matrix_key = "stress"
         """Keyword used to identify the discretization matrix for the stress. Defaults
         to 'stress'."""
