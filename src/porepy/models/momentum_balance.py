@@ -613,6 +613,15 @@ class SolutionStrategyMomentumBalanceThreeField(SolutionStrategyMomentumBalance)
             iterate_index=0,
         )
 
+    def set_discretization_parameters(self) -> None:
+        """Set discretization parameters for the simulation."""
+
+        super().set_discretization_parameters()
+        # Also set boundary conditions for the rotation.
+        for sd, data in self.mdg.subdomains(return_data=True):
+            if sd.dim == self.nd:
+                param = data[pp.PARAMETERS][self.stress_keyword]['bc_rot'] = self.bc_type_rotation(sd)
+
 
 class BoundaryConditionsMomentumBalance(pp.BoundaryConditionMixin):
     """Boundary conditions for the momentum balance."""
@@ -767,6 +776,25 @@ class BoundaryConditionsThreeFieldMomentumBalance(BoundaryConditionsMomentumBala
 
     rotation_variable: str
     volumetric_strain_variable: str
+
+    def bc_type_rotation(self, sd: pp.Grid) -> pp.BoundaryCondition | pp.BoundaryConditionVectorial:
+        """Define type of boundary conditions.
+
+        Parameters:
+            sd: Subdomain grid.
+
+        Returns:
+            Boundary condition representation. Dirichlet on all global boundaries.
+
+        """
+        # Define boundary faces.
+        boundary_faces = self.domain_boundary_sides(sd).all_bf
+        if self.nd == 2:
+            bc = pp.BoundaryCondition(sd, boundary_faces, "dir")
+        else:
+            bc = pp.BoundaryConditionVectorial(sd, boundary_faces, "dir")
+
+        return bc        
 
     def bc_values_rotation(self, boundary_grid: pp.Grid) -> np.ndarray:
         """Rotation values for the Dirichlet boundary condition.
