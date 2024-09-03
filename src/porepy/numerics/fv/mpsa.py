@@ -155,7 +155,7 @@ class Mpsa(Discretization):
         matrix_dictionary will be updated with the following entries:
             - ``stress: sps.csc_matrix (sd.dim * sd.num_faces, sd.dim * sd.num_cells)``
                 stress discretization, cell center contribution
-            - ``bound_flux: sps.csc_matrix (sd.dim * sd.num_faces, sd.dim *
+            - ``bound_stress: sps.csc_matrix (sd.dim * sd.num_faces, sd.dim *
                 sd.num_faces)`` stress discretization, face contribution
             - ``bound_displacement_cell: sps.csc_matrix (sd.dim * sd.num_faces,
                                                          sd.dim * sd.num_cells)``
