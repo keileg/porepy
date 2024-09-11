@@ -523,9 +523,7 @@ class ThreeFieldMomentumBalanceEquations(MomentumBalanceEquations):
 
         angular_momentum = (
             rotation_stress
-            - self.volume_integral(
-                inv_mu * rotation, subdomains, dim=self._rotation_dimension()
-            )
+            - self.volume_integral(inv_mu * rotation, subdomains, dim=self._rotation_dimension())
             - self.source_rotation(subdomains)
         )
         # TODO: Cosserat model
@@ -586,6 +584,7 @@ class ConstitutiveLawsMomentumBalance(
 
 class ConstitutiveLawsThreeFieldMomentumBalance:
 
+
     def mechanical_stress(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
         """override the definition of mechanical stress in the constitutive laws. This
         will be inherited into the poromechanics model.
@@ -597,10 +596,41 @@ class ConstitutiveLawsThreeFieldMomentumBalance:
             Operator for the stress.
 
         """
-        discr = self.stress_discretization(domains)
+        # TODO: This is copied from constitutive laws. Fix
+        if len(domains) == 0 or all(isinstance(d, pp.BoundaryGrid) for d in domains):
+            return self.create_boundary_operator(
+                name=self.stress_keyword, domains=domains  # type: ignore[call-arg]
+            )
 
+        # Check that the subdomains are grids.
+        if not all([isinstance(g, pp.Grid) for g in domains]):
+            raise ValueError(
+                """Argument subdomains a mixture of grids and boundary grids."""
+            )
+        # By now we know that subdomains is a list of grids, so we can cast it as such
+        # (in the typing sense).
+        domains = cast(list[pp.Grid], domains)
+
+        for sd in domains:
+            # The mechanical stress is only defined on subdomains of co-dimension 0.
+            if sd.dim != self.nd:
+                raise ValueError("Subdomain must be of co-dimension 0.")
+
+        # No need to facilitate changing of stress discretization, only one is
+        # available at the moment.
+        discr = self.stress_discretization(domains)
+        # Fractures in the domain
+        interfaces = self.subdomains_to_interfaces(domains, [1])
+
+        # Boundary conditions on external boundaries
+        boundary_operator = self.combine_boundary_operators_mechanical_stress(domains)
+        proj = pp.ad.MortarProjections(self.mdg, domains, interfaces, dim=self.nd)
         stress = (
             discr.stress_displacement() @ self.displacement(domains)
+            + discr.bound_stress() @ boundary_operator
+            + discr.bound_stress()
+            @ proj.mortar_to_primary_avg
+            @ self.interface_displacement(interfaces)
             + discr.stress_rotation() @ self.rotation(domains)
             + discr.stress_total_pressure() @ self.total_pressure(domains)
         )
@@ -619,6 +649,11 @@ class ConstitutiveLawsThreeFieldMomentumBalance:
             Operator for the couple stress.
 
         """
+        if len(domains) == 0 or all(isinstance(d, pp.BoundaryGrid) for d in domains):
+            return self.create_boundary_operator(
+                name=self.rotation_keyword, domains=domains  # type: ignore[call-arg]
+            )
+
         discr = self.stress_discretization(domains)
         couple_stress = discr.rotation_diffusion() @ self.rotation(domains)
         return couple_stress
@@ -633,10 +668,49 @@ class ConstitutiveLawsThreeFieldMomentumBalance:
             Operator for the total rotation.
 
         """
+        # TODO: This is copied from constitutive laws. Fix
+        if len(domains) == 0 or all(isinstance(d, pp.BoundaryGrid) for d in domains):
+            return self.create_boundary_operator(
+                name=self.stress_keyword, domains=domains  # type: ignore[call-arg]
+            )
+
+        # Check that the subdomains are grids.
+        if not all([isinstance(g, pp.Grid) for g in domains]):
+            raise ValueError(
+                """Argument subdomains a mixture of grids and boundary grids."""
+            )
+        # By now we know that subdomains is a list of grids, so we can cast it as such
+        # (in the typing sense).
+        domains = cast(list[pp.Grid], domains)
+
+        for sd in domains:
+            # The mechanical stress is only defined on subdomains of co-dimension 0.
+            if sd.dim != self.nd:
+                raise ValueError("Subdomain must be of co-dimension 0.")
+
+        # No need to facilitate changing of stress discretization, only one is
+        # available at the moment.
         discr = self.stress_discretization(domains)
+
+        # Boundary conditions on external boundaries
+        boundary_operator = self.combine_boundary_operators_rotation(domains)
+
         couple_stress = self.couple_stress(domains)
         return (discr.rotation_displacement() @ self.displacement(domains)
+            + discr.bound_rotation_displacement() @ boundary_operator
             + couple_stress)
+
+    def combine_boundary_operators_rotation(self, subdomains):
+        op = self._combine_boundary_operators(  # type: ignore[call-arg]
+            subdomains=subdomains,
+            dirichlet_operator=self.rotation,
+            neumann_operator=self.couple_stress,
+            robin_operator=None,
+            bc_type=self.bc_type_rotation,
+            dim=self.nd,
+            name="bc_values_rotation",
+        )
+        return op        
 
     def inv_lambda(self, subdomains):
         return pp.ad.TimeDependentDenseArray(
@@ -834,12 +908,80 @@ class VariablesThreeFieldMomentumBalance(VariablesMomentumBalance):
         )
 
     def rotation(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
+        """Rotation in the matrix.
+
+        Parameters:
+            domains: List of subdomains or interface grids where the displacement is
+                defined. Should be the matrix subdomains.
+
+        Returns:
+            Variable for the rotation.
+
+        Raises:
+            ValueError: If the dimension of the subdomains is not equal to the ambient
+                dimension of the problem.
+            ValueError: If the method is called on a mixture of grids and boundary
+                grids
+
+        """
+        if len(domains) == 0 or all(
+            isinstance(grid, pp.BoundaryGrid) for grid in domains
+        ):
+            return self.create_boundary_operator(  # type: ignore[call-arg]
+                name=self.rotation_variable, domains=domains
+            )
+        # Check that the subdomains are grids
+        if not all(isinstance(grid, pp.Grid) for grid in domains):
+            raise ValueError(
+                "Method called on a mixture of subdomain and boundary grids."
+            )
+        # Now we can cast to Grid
+        domains = cast(list[pp.Grid], domains)
+
+        if not all([grid.dim == self.nd for grid in domains]):
+            raise ValueError(
+                "Rotation is only defined in subdomains of dimension nd."
+            )
+
         return self.equation_system.md_variable(self.rotation_variable, domains)
 
     def total_pressure(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
-        return self.equation_system.md_variable(
-            self.total_pressure_variable, domains
-        )
+        """Total pressure in the matrix.
+
+        Parameters:
+            domains: List of subdomains or interface grids where the displacement is
+                defined. Should be the matrix subdomains.
+
+        Returns:
+            Variable for the displacement.
+
+        Raises:
+            ValueError: If the dimension of the subdomains is not equal to the ambient
+                dimension of the problem.
+            ValueError: If the method is called on a mixture of grids and boundary
+                grids
+
+        """
+        if len(domains) == 0 or all(
+            isinstance(grid, pp.BoundaryGrid) for grid in domains
+        ):
+            return self.create_boundary_operator(  # type: ignore[call-arg]
+                name=self.total_pressure_variable, domains=domains
+            )
+        # Check that the subdomains are grids
+        if not all(isinstance(grid, pp.Grid) for grid in domains):
+            raise ValueError(
+                "Method called on a mixture of subdomain and boundary grids."
+            )
+        # Now we can cast to Grid
+        domains = cast(list[pp.Grid], domains)
+
+        if not all([grid.dim == self.nd for grid in domains]):
+            raise ValueError(
+                "Total pressure is only defined in subdomains of dimension nd."
+            )
+
+        return self.equation_system.md_variable(self.total_pressure_variable, domains)
 
 
 class SolutionStrategyMomentumBalance(pp.SolutionStrategy):
@@ -1076,6 +1218,9 @@ class SolutionStrategyMomentumBalanceThreeField(SolutionStrategyMomentumBalance)
         self.total_pressure_variable: str = "total_pressure"
         """Name of the volumetric strain variable."""
 
+        self.rotation_keyword: str = "rotation"
+        """Keyword to identify fields specifically related to rotation."""
+
     def initial_condition(self):
         super().initial_condition()
 
@@ -1214,17 +1359,13 @@ class BoundaryConditionsThreeFieldMomentumBalance(BoundaryConditionsMomentumBala
             on the provided boundary grid.
 
         """
-        assert self.nd == 2, "Rotation is only implemented in 2D"
-        return np.zeros(boundary_grid.num_faces)
+        return np.zeros(boundary_grid.num_cells * self._rotation_dimension())
 
     def update_all_boundary_conditions(self) -> None:
-        """Set values for the rotation and the volumetric strain on boundaries."""
+        """Set values for the rotation on boundaries."""
         super().update_all_boundary_conditions()
-        #self.update_boundary_condition(self.rotation_variable, self.bc_values_rotation_displacement)
-        #self.update_boundary_condition(self.rotation_variable, self.bc_values_rotation_rotation)
-        #self.update_boundary_condition(
-        #    self.volumetric_strain_variable, self.bc_values_mass_displacement
-        #)
+        self.update_boundary_condition(self.rotation_variable, self.bc_values_rotation)
+
 
 # Note that we ignore a mypy error here. There are some inconsistencies in the method
 # definitions of the mixins, related to the enforcement of keyword-only arguments. The
