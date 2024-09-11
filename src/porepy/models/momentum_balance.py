@@ -188,59 +188,79 @@ class MomentumBalanceEquations(pp.BalanceEquation):
 class ThreeFieldMomentumBalanceEquations(MomentumBalanceEquations):
 
     def set_equations(self) -> None:
+        # Set equations for momentum balance and fracture deformation by calling
+        # the parent class.
         super().set_equations()
-
-        # Additional equations for conservation of angular momentum and solid mass
         matrix_subdomains = self.mdg.subdomains(dim=self.nd)
 
-        discr = self.stress_discretization(matrix_subdomains)
+        angular_momentum = self.angular_momentum_equation(matrix_subdomains)
+        solid_mass = self.solid_mass_equation(matrix_subdomains)
+
+        self.equation_system.set_equation(
+            angular_momentum, matrix_subdomains, {"cells": self._rotation_dimension()}
+        )
+        self.equation_system.set_equation(solid_mass, matrix_subdomains, {"cells": 1})
+
+
+    def _rotation_dimension(self):
+        return 1 if self.nd == 2 else 3
+
+    def angular_momentum_equation(self, subdomains: list[pp.Grid]) -> pp.ad.Operator:
+
+        # Additional equations for conservation of angular momentum and solid mass
+
+        discr = self.stress_discretization(subdomains)
 
         # Conservation of angular momentum
-        displacement = self.displacement(matrix_subdomains)
+        displacement = self.displacement(subdomains)
 
         rotation_dim = 1 if self.nd == 2 else 3
 
-        stiffness = self.stiffness_tensor(matrix_subdomains[0])
-        inv_lmbda = pp.ad.DenseArray(1 / stiffness.lmbda)
+        stiffness = self.stiffness_tensor(subdomains[0])
 
         if self.nd == 2:
-            div_rot = pp.ad.Divergence(matrix_subdomains, 1)
-            div_mass = div_rot
+            div_rot = pp.ad.Divergence(subdomains, 1)
             inv_mu = pp.ad.DenseArray(1 / stiffness.mu)
         else:
-            div_rot = pp.ad.Divergence(matrix_subdomains, self.nd)
-            div_mass = pp.ad.Divergence(matrix_subdomains, 1)
+            div_rot = pp.ad.Divergence(subdomains, self.nd)
             inv_mu = pp.ad.DenseArray(1 / np.repeat(stiffness.mu, self.nd))
 
-        rotation = self.rotation(matrix_subdomains)
-        total_rotation = self.total_rotation(matrix_subdomains)
-        #couple_stress = self.couple_stress(matrix_subdomains)
-        rotation_stress = (
-            div_rot @ total_rotation
+        rotation = self.rotation(subdomains)
+        total_rotation = self.total_rotation(subdomains)
+
+        rotation_stress = div_rot @ total_rotation
+
+        angular_momentum = (
+            rotation_stress
             - self.volume_integral(
-                inv_mu * rotation, matrix_subdomains, dim=rotation_dim
+                inv_mu * rotation, subdomains, dim=self._rotation_dimension()
             )
-            - self.source_rotation(matrix_subdomains)
+            - self.source_rotation(subdomains)
         )
         # TODO: Cosserat model
-        rotation_stress.set_name("rotation_stress")
+        angular_momentum.set_name("angular_momentum_balance_equation")
 
+        return angular_momentum    
+
+    def solid_mass_equation(self, subdomains: list[pp.Grid]) -> pp.ad.Operator:
+
+        discr = self.stress_discretization(subdomains)
+        stiffness = self.stiffness_tensor(subdomains[0])
+        div_mass = pp.ad.Divergence(subdomains, 1)
+
+        inv_lmbda = pp.ad.DenseArray(1 / stiffness.lmbda)
         # Conservation of solid mass
-        volumetric_strain = self.volumetric_strain(matrix_subdomains)
+        volumetric_strain = self.volumetric_strain(subdomains)
         solid_mass = div_mass @ (
-            discr.mass_displacement() @ displacement
+            discr.mass_displacement() @ self.displacement(subdomains)
             + discr.mass_volumetric_strain() @ volumetric_strain
         ) - self.volume_integral(
-            inv_lmbda * volumetric_strain, matrix_subdomains, dim=1
-        ) - self.source_solid_pressure(matrix_subdomains)
+            inv_lmbda * volumetric_strain, subdomains, dim=1
+        ) - self.source_solid_pressure(subdomains)
         
 
-        solid_mass.set_name("solid_mass")
-
-        self.equation_system.set_equation(
-            rotation_stress, matrix_subdomains, {"cells": rotation_dim}
-        )
-        self.equation_system.set_equation(solid_mass, matrix_subdomains, {"cells": 1})
+        solid_mass.set_name("solid_mass_equation")
+        return solid_mass
 
 
 class ConstitutiveLawsMomentumBalance(
