@@ -511,7 +511,9 @@ class ThreeFieldMomentumBalanceEquations(MomentumBalanceEquations):
             div_rot = pp.ad.Divergence(subdomains, self.nd)
         inv_mu = self.inv_mu(subdomains)
 
+        # The rotation stress variable
         rotation = self.rotation(subdomains)
+        # The total rotation on
         total_rotation = self.total_rotation(subdomains)
 
         assert len(subdomains) == 1
@@ -541,14 +543,14 @@ class ThreeFieldMomentumBalanceEquations(MomentumBalanceEquations):
         bc_displacement = discr.bound_mass_displacement() @ self.bc_values_displacement(subdomains[0])
         
         # Conservation of solid mass
-        volumetric_strain = self.solid_pressure(subdomains)
+        volumetric_strain = self.total_pressure(subdomains)
         solid_mass = div_mass @ (
             discr.mass_displacement() @ self.displacement(subdomains)
-            + discr.mass_solid_pressure() @ volumetric_strain
+            + discr.mass_total_pressure() @ volumetric_strain
             + bc_displacement
         ) - self.volume_integral(
             inv_lmbda * volumetric_strain, subdomains, dim=1
-        ) - self.source_solid_pressure(subdomains)
+        ) - self.source_total_pressure(subdomains)
         
 
         solid_mass.set_name("solid_mass_equation")
@@ -600,7 +602,7 @@ class ConstitutiveLawsThreeFieldMomentumBalance:
         stress = (
             discr.stress_displacement() @ self.displacement(domains)
             + discr.stress_rotation() @ self.rotation(domains)
-            + discr.stress_solid_pressure() @ self.solid_pressure(domains)
+            + discr.stress_total_pressure() @ self.total_pressure(domains)
         )
         return stress
 
@@ -826,7 +828,7 @@ class VariablesThreeFieldMomentumBalance(VariablesMomentumBalance):
         )
         self.equation_system.create_variables(
             dof_info={"cells": 1},
-            name=self.volumetric_strain_variable,
+            name=self.total_pressure_variable,
             subdomains=matrix_subdomains,
             tags={"si_units": "1"},
         )
@@ -834,9 +836,9 @@ class VariablesThreeFieldMomentumBalance(VariablesMomentumBalance):
     def rotation(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
         return self.equation_system.md_variable(self.rotation_variable, domains)
 
-    def solid_pressure(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
+    def total_pressure(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
         return self.equation_system.md_variable(
-            self.volumetric_strain_variable, domains
+            self.total_pressure_variable, domains
         )
 
 
@@ -1071,7 +1073,7 @@ class SolutionStrategyMomentumBalanceThreeField(SolutionStrategyMomentumBalance)
         self.rotation_variable: str = "rotation"
         """Name of the rotation variable."""
 
-        self.volumetric_strain_variable: str = "volumetric_strain"
+        self.total_pressure_variable: str = "total_pressure"
         """Name of the volumetric strain variable."""
 
     def initial_condition(self):
@@ -1090,11 +1092,11 @@ class SolutionStrategyMomentumBalanceThreeField(SolutionStrategyMomentumBalance)
             iterate_index=0,
         )
 
-        volumetric_strain_vals = np.zeros(num_cells)
+        total_pressure_vals = np.zeros(num_cells)
 
         self.equation_system.set_variable_values(
-            volumetric_strain_vals,
-            [self.volumetric_strain_variable],
+            total_pressure_vals,
+            [self.total_pressure_variable],
             time_step_index=0,
             iterate_index=0,
         )
