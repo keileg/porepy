@@ -151,6 +151,24 @@ class MpsaAd(Discretization):
         wrap_discretization(self, self._discretization, subdomains=subdomains)
 
 
+class TpsaAd(Discretization):
+    def __init__(self, keyword: str, subdomains: list[pp.Grid]) -> None:
+        self.subdomains = subdomains
+        self._discretization = pp.Tpsa(keyword)
+        self._name = "Tpsa"
+
+        self.keyword = keyword
+
+        # Declare attributes, these will be initialized by the below call to the
+        # discretization wrapper.
+
+        self.stress: Callable[[], MergedOperator]
+        self.bound_stress: Callable[[], MergedOperator]
+        self.bound_displacement_cell: Callable[[], MergedOperator]
+        self.bound_displacement_face: Callable[[], MergedOperator]
+
+        wrap_discretization(self, self._discretization, subdomains=subdomains)
+
 ## Flow related
 
 
