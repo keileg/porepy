@@ -541,10 +541,10 @@ class ThreeFieldMomentumBalanceEquations(MomentumBalanceEquations):
         bc_displacement = discr.bound_mass_displacement() @ self.bc_values_displacement(subdomains[0])
         
         # Conservation of solid mass
-        volumetric_strain = self.volumetric_strain(subdomains)
+        volumetric_strain = self.solid_pressure(subdomains)
         solid_mass = div_mass @ (
             discr.mass_displacement() @ self.displacement(subdomains)
-            + discr.mass_volumetric_strain() @ volumetric_strain
+            + discr.mass_solid_pressure() @ volumetric_strain
             + bc_displacement
         ) - self.volume_integral(
             inv_lmbda * volumetric_strain, subdomains, dim=1
@@ -600,7 +600,7 @@ class ConstitutiveLawsThreeFieldMomentumBalance:
         stress = (
             discr.stress_displacement() @ self.displacement(domains)
             + discr.stress_rotation() @ self.rotation(domains)
-            + discr.stress_volumetric_strain() @ self.volumetric_strain(domains)
+            + discr.stress_solid_pressure() @ self.solid_pressure(domains)
         )
         return stress
 
@@ -834,7 +834,7 @@ class VariablesThreeFieldMomentumBalance(VariablesMomentumBalance):
     def rotation(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
         return self.equation_system.md_variable(self.rotation_variable, domains)
 
-    def volumetric_strain(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
+    def solid_pressure(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
         return self.equation_system.md_variable(
             self.volumetric_strain_variable, domains
         )
