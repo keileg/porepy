@@ -3015,6 +3015,8 @@ class ThreeFieldLinearElasticMechanicalStress:
     """Constitutive laws related to the three-field formulation of a linear elastic
     medium."""
 
+    def _rotation_dimension(self):
+        return 1 if self.nd == 2 else 3
 
     def mechanical_stress(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
         """Linear elastic mechanical stress [Pa].
@@ -3119,6 +3121,20 @@ class ThreeFieldLinearElasticMechanicalStress:
         return (discr.rotation_displacement() @ self.displacement(domains)
             + discr.bound_rotation_displacement() @ boundary_operator
             )
+
+    def solid_mass_flux(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
+        
+        discr = self.stress_discretization(subdomains)
+
+        # Boundary conditions on external boundaries for the displacement variable
+        boundary_operator = self.combine_boundary_operators_mechanical_stress(domains)
+
+        mass_flux = (
+            discr.mass_displacement() @ self.displacement(subdomains)
+            + discr.mass_total_pressure() @ self.total_pressure(subdomains)
+            + discr.bound_mass_displacement() @ boundary_operator
+        ) 
+        return mass_flux
 
     def inv_lambda(self, subdomains):
         return pp.ad.TimeDependentDenseArray(

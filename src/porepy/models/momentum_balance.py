@@ -185,7 +185,7 @@ class MomentumBalanceEquations(pp.BalanceEquation):
         )
 
 
-class ThreeFieldMomentumBalanceEquations(MomentumBalanceEquations):
+class AngularMomentumEquation:
 
     def set_equations(self) -> None:
         # Set equations for momentum balance and fracture deformation by calling
@@ -194,77 +194,56 @@ class ThreeFieldMomentumBalanceEquations(MomentumBalanceEquations):
         matrix_subdomains = self.mdg.subdomains(dim=self.nd)
 
         angular_momentum = self.angular_momentum_equation(matrix_subdomains)
-        solid_mass = self.solid_mass_equation(matrix_subdomains)
 
         self.equation_system.set_equation(
             angular_momentum, matrix_subdomains, {"cells": self._rotation_dimension()}
         )
-        self.equation_system.set_equation(solid_mass, matrix_subdomains, {"cells": 1})
-
-
-    def _rotation_dimension(self):
-        return 1 if self.nd == 2 else 3
-
 
     def angular_momentum_equation(self, subdomains: list[pp.Grid]) -> pp.ad.Operator:
 
         # Additional equations for conservation of angular momentum and solid mass
 
-        discr = self.stress_discretization(subdomains)
-
-        # Conservation of angular momentum
-        displacement = self.displacement(subdomains)
-
-        rotation_dim = 1 if self.nd == 2 else 3
-        if self.nd == 2:
-            div_rot = pp.ad.Divergence(subdomains, 1)
-            
-        else:
-            div_rot = pp.ad.Divergence(subdomains, self.nd)
-        inv_mu = self.inv_mu(subdomains)
-
-        # The rotation stress variable
-        rotation = self.rotation(subdomains)
-        # The total rotation on
+        # The total rotation on the faces (this is sort of a flux, in a very generalized
+        # sense).
         total_rotation = self.total_rotation(subdomains)
 
-        assert len(subdomains) == 1
-        bc_displacement = discr.bound_rotation_displacement() @ self.bc_values_displacement(subdomains[0])
-        bc_rotation = discr.bound_rotation_diffusion() @ self.bc_values_rotation(subdomains[0])
-        rotation_stress = div_rot @ (total_rotation + bc_displacement + bc_rotation)
+        accumulation = self.inv_mu(subdomains) * self.rotation(subdomains)
 
-        angular_momentum = (
-            rotation_stress
-            - self.volume_integral(inv_mu * rotation, subdomains, dim=self._rotation_dimension())
-            - self.source_rotation(subdomains)
-        )
-        # TODO: Cosserat model
+        angular_momentum = self.balance_equation(subdomains, accumulation, total_rotation, source, dim=1)
         angular_momentum.set_name("angular_momentum_balance_equation")
 
         return angular_momentum    
 
+    def source_rotation(self, subdomains: list[pp.Grid]) -> pp.ad.Operator:
+        num_cells = sum(sd.num_cells for sd in subdomains)
+        return pp.ad.DenseArray(np.zeros(num_cells), "zero rotation source")
+
+class SolidMassEquation:
+
+    def set_equations(self) -> None:
+        # Set equations for momentum balance and fracture deformation by calling
+        # the parent class.
+        super().set_equations()
+        matrix_subdomains = self.mdg.subdomains(dim=self.nd)
+
+        solid_mass = self.solid_mass_equation(matrix_subdomains)
+
+        self.equation_system.set_equation(solid_mass, matrix_subdomains, {"cells": 1})
+
     def solid_mass_equation(self, subdomains: list[pp.Grid]) -> pp.ad.Operator:
 
-        discr = self.stress_discretization(subdomains)
-        inv_lmbda = self.inv_lambda(subdomains)
-        div_mass = pp.ad.Divergence(subdomains, 1)
+        mass_flux = self.solid_mass_flux(subdomains)
 
-        assert len(subdomains) == 1
-        bc_displacement = discr.bound_mass_displacement() @ self.bc_values_displacement(subdomains[0])
-        
-        # Conservation of solid mass
-        volumetric_strain = self.total_pressure(subdomains)
-        solid_mass = div_mass @ (
-            discr.mass_displacement() @ self.displacement(subdomains)
-            + discr.mass_total_pressure() @ volumetric_strain
-            + bc_displacement
-        ) - self.volume_integral(
-            inv_lmbda * volumetric_strain, subdomains, dim=1
-        ) - self.source_total_pressure(subdomains)
-        
+        source = self.source_solid_mass(subdomains)
+        accumulation = self.inv_lmbda(subdomains) * self.total_pressure(subdomains)
+        solid_mass = self.balance_equation(subdomains, accumulation, mass_flux, source, dim=1)
 
         solid_mass.set_name("solid_mass_equation")
         return solid_mass
+
+    def source_solid_mass(self, subdomains: list[pp.Grid]) -> pp.ad.Operator:
+        num_cells = sum(sd.num_cells for sd in subdomains)
+        return pp.ad.DenseArray(np.zeros(num_cells), "zero solid mass source")
 
 
 class ConstitutiveLawsMomentumBalance(
@@ -606,7 +585,7 @@ class SolutionStrategyMomentumBalance(pp.SolutionStrategy):
         return self.mdg.dim_min() < self.nd
 
 
-class SolutionStrategyMomentumBalanceThreeField(SolutionStrategyMomentumBalance):
+class SolutionStrategyMomentumBalanceThreeField:
 
     def __init__(self, params: Optional[dict] = None) -> None:
         super().__init__(params)
@@ -803,7 +782,7 @@ class InitialConditionsMomentumBalance(pp.InitialConditionMixin):
         return np.zeros(intf.num_cells * self.nd)
 
 
-class BoundaryConditionsThreeFieldMomentumBalance(BoundaryConditionsMomentumBalance):
+class BoundaryConditionsCosseratMaterial:
     """Boundary conditions for the three-field momentum balance."""
 
     rotation_variable: str
@@ -845,6 +824,25 @@ class BoundaryConditionsThreeFieldMomentumBalance(BoundaryConditionsMomentumBala
         """Set values for the rotation on boundaries."""
         super().update_all_boundary_conditions()
         self.update_boundary_condition(self.rotation_variable, self.bc_values_rotation)
+
+
+class ThreeFieldMomentumBalanceMixin(
+    VariablesThreeFieldMomentumBalance,
+    AngularMomentumEquation,
+    SolidMassEquation,
+    constitutive_laws.ThreeFieldLinearElasticMechanicalStress,
+    SolutionStrategyMomentumBalanceThreeField
+):
+    pass
+
+
+class CosseratMaterialMixin(
+    constitutive_laws.CosseratMaterial,
+    boundaryConditionsCosseratMaterial,
+    ThreeFieldMomentumBalanceMixin
+):
+    pass
+
 
 
 # Note that we ignore a mypy error here. There are some inconsistencies in the method
