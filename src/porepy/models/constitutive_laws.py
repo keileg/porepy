@@ -3011,6 +3011,180 @@ class LinearElasticMechanicalStress(pp.PorePyModel):
         return pp.ad.MpsaAd(self.stress_keyword, subdomains)
 
 
+class ThreeFieldLinearElasticMechanicalStress:
+    """Constitutive laws related to the three-field formulation of a linear elastic
+    medium."""
+
+
+    def mechanical_stress(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
+        """Linear elastic mechanical stress [Pa].
+
+        Parameters:
+            subdomains: List of subdomains where the stress is defined.
+
+        Returns:
+            Operator for the stress.
+
+        """
+        # TODO: This is common to the standard (one-field) mechanical stress. See if we
+        # can find a way to unify.
+        if len(domains) == 0 or all(isinstance(d, pp.BoundaryGrid) for d in domains):
+            return self.create_boundary_operator(
+                name=self.stress_keyword, domains=domains  # type: ignore[call-arg]
+            )
+
+        # Check that the subdomains are grids.
+        if not all([isinstance(g, pp.Grid) for g in domains]):
+            raise ValueError(
+                """Argument subdomains a mixture of grids and boundary grids."""
+            )
+        # By now we know that subdomains is a list of grids, so we can cast it as such
+        # (in the typing sense).
+        domains = cast(list[pp.Grid], domains)
+
+        for sd in domains:
+            # The mechanical stress is only defined on subdomains of co-dimension 0.
+            if sd.dim != self.nd:
+                raise ValueError("Subdomain must be of co-dimension 0.")
+
+        # No need to facilitate changing of stress discretization, only one is
+        # available at the moment.
+        discr = self.stress_discretization(domains)
+        # Fractures in the domain
+        interfaces = self.subdomains_to_interfaces(domains, [1])
+
+        # Boundary conditions on external boundaries
+        boundary_operator = self.combine_boundary_operators_mechanical_stress(domains)
+        proj = pp.ad.MortarProjections(self.mdg, domains, interfaces, dim=self.nd)
+        stress = (
+            discr.stress_displacement() @ self.displacement(domains)
+            + discr.bound_stress() @ boundary_operator
+            + discr.bound_stress()
+            @ proj.mortar_to_primary_avg
+            @ self.interface_displacement(interfaces)
+            + discr.stress_rotation() @ self.rotation(domains)
+            + discr.stress_total_pressure() @ self.total_pressure(domains)
+        )
+        return stress
+
+    def stress_discretization(self, subdomains: list[pp.Grid]) -> pp.ad.TpsaAd:
+        """Set a Tpsa discretization scheme for the stress.
+
+        Parameters:
+            subdomains: List of grids where the discretization is to be set.
+
+        Returns:
+            A Tpsa discretization object for the grids.
+
+        """
+        return pp.ad.TpsaAd(self.stress_keyword, subdomains)
+
+    def total_rotation(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
+        """Total rotation operator.
+
+        Parameters:
+            subdomains: List of subdomains where the total rotation is defined.
+
+        Returns:
+            Operator for the total rotation.
+
+        """
+        # TODO: This is copied from constitutive laws. Fix
+        if len(domains) == 0 or all(isinstance(d, pp.BoundaryGrid) for d in domains):
+            return self.create_boundary_operator(
+                name=self.stress_keyword, domains=domains  # type: ignore[call-arg]
+            )
+
+        # Check that the subdomains are grids.
+        if not all([isinstance(g, pp.Grid) for g in domains]):
+            raise ValueError(
+                """Argument subdomains a mixture of grids and boundary grids."""
+            )
+        # By now we know that subdomains is a list of grids, so we can cast it as such
+        # (in the typing sense).
+        domains = cast(list[pp.Grid], domains)
+
+        for sd in domains:
+            # The mechanical stress is only defined on subdomains of co-dimension 0.
+            if sd.dim != self.nd:
+                raise ValueError("Subdomain must be of co-dimension 0.")
+
+        # No need to facilitate changing of stress discretization, only one is
+        # available at the moment.
+        discr = self.stress_discretization(domains)
+
+        # Boundary conditions on external boundaries for the displacement variable
+        boundary_operator = self.combine_boundary_operators_mechanical_stress(domains)
+
+        return (discr.rotation_displacement() @ self.displacement(domains)
+            + discr.bound_rotation_displacement() @ boundary_operator
+            )
+
+    def inv_lambda(self, subdomains):
+        return pp.ad.TimeDependentDenseArray(
+            name="inv_lambda",
+            domains=self.mdg.subdomains(),
+        )
+
+    def inv_mu(self, subdomains):
+        return pp.ad.TimeDependentDenseArray(
+            name="inv_mu",
+            domains=self.mdg.subdomains(),
+        )
+
+class CosseratMaterial(ThreeFieldLinearElasticMechanicalStress):
+
+    def couple_stress(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
+        """Couple stress operator.
+
+        Parameters:
+            subdomains: List of subdomains where the couple stress is defined.
+
+        Returns:
+            Operator for the couple stress.
+
+        """
+        if len(domains) == 0 or all(isinstance(d, pp.BoundaryGrid) for d in domains):
+            return self.create_boundary_operator(
+                name=self.rotation_keyword, domains=domains  # type: ignore[call-arg]
+            )
+
+        discr = self.stress_discretization(domains)
+
+        rotation_boundary = self.combine_boundary_operators_rotation(domains)
+
+        couple_stress = discr.rotation_diffusion() @ self.rotation(domains) + discr.bound_rotation_diffusion() @ rotation_boundary
+
+        couple_stress.set_name("Couple stress")
+
+        return couple_stress
+
+    def total_rotation(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
+
+        displacement_rotation = super().total_rotation(domains)
+
+        cosserat_rotation = self.couple_stress(domains)
+
+        rot = displacement_rotation + cosserat_rotation
+        rot.set_name("Total rotation in Cosserat material")
+        return rot
+        
+
+    def combine_boundary_operators_rotation(self, domains: pp.subdomainOrBoundary) -> pp.ad.Operator:
+        # Note that the tpsa discretization has not yet implemented Robin boundary
+        # conditions for the rotation variable, thus at the moment, the robin_operator
+        # argument must be set to None. For more information, see tpsa.py.
+        op = self._combine_boundary_operators(  # type: ignore[call-arg]
+            subdomains=domains,
+            dirichlet_operator=self.rotation,
+            neumann_operator=self.couple_stress,
+            robin_operator=None,
+            bc_type=self.bc_type_rotation,
+            dim=self.nd,
+            name="bc_values_rotation",
+        )
+        return op        
+
 class PressureStress(LinearElasticMechanicalStress):
     """Stress tensor from pressure.
 
