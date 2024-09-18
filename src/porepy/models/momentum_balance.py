@@ -542,13 +542,33 @@ class VariablesMomentumBalance(VariableMixin):
         )
 
 
-class VariablesThreeFieldMomentumBalance(VariablesMomentumBalance):
+class VariablesThreeFieldMomentumBalance:
 
     def create_variables(self) -> None:
+        """Set variables related to the three-field formulation of momentuum balance.
+
+        The following variables are set:
+            - Rotation in the matrix.
+            - Total pressure in the matrix.
+
+        See individual variable methods for details.
+
+        Raises:
+            ValueError: If the spatial dimension is less than 2.
+
+        """       
+        # Call super to create variables defined by other mixin classes.
         super().create_variables()
+
+        # It should be possible to formulate a problem for 1d media, EK can speculate on
+        # what it will contain, but it is not covered by the current implementation, so
+        # we raise an error.
+        if self.nd < 2:
+            raise ValueError("The spatial dimension should be 2 or 3")
 
         matrix_subdomains = self.mdg.subdomains(dim=self.nd)
 
+        # Rotation is a 1d quantity for 2d media, 3d in 3d domains.
         rotation_dim = 1 if self.nd == 2 else 3
 
         self.equation_system.create_variables(
@@ -561,11 +581,14 @@ class VariablesThreeFieldMomentumBalance(VariablesMomentumBalance):
             dof_info={"cells": 1},
             name=self.total_pressure_variable,
             subdomains=matrix_subdomains,
-            tags={"si_units": "1"},
+            tags={"si_units": "Pa"},
         )
 
     def rotation(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
         """Rotation in the matrix.
+
+        TODO: This is copied from the corresponding method for displacements. Should we
+        make a factory method?
 
         Parameters:
             domains: List of subdomains or interface grids where the displacement is
@@ -578,7 +601,7 @@ class VariablesThreeFieldMomentumBalance(VariablesMomentumBalance):
             ValueError: If the dimension of the subdomains is not equal to the ambient
                 dimension of the problem.
             ValueError: If the method is called on a mixture of grids and boundary
-                grids
+                grids.
 
         """
         if len(domains) == 0 or all(
@@ -587,12 +610,12 @@ class VariablesThreeFieldMomentumBalance(VariablesMomentumBalance):
             return self.create_boundary_operator(  # type: ignore[call-arg]
                 name=self.rotation_variable, domains=domains
             )
-        # Check that the subdomains are grids
+        # Check that the subdomains are grids.
         if not all(isinstance(grid, pp.Grid) for grid in domains):
             raise ValueError(
                 "Method called on a mixture of subdomain and boundary grids."
             )
-        # Now we can cast to Grid
+        # Now we can cast to Grid.
         domains = cast(list[pp.Grid], domains)
 
         if not all([grid.dim == self.nd for grid in domains]):
@@ -622,15 +645,19 @@ class VariablesThreeFieldMomentumBalance(VariablesMomentumBalance):
         if len(domains) == 0 or all(
             isinstance(grid, pp.BoundaryGrid) for grid in domains
         ):
+            # The total pressure should never be invoked on a boundary, it is not a
+            # primary variable. EK is not sure whether such a call can still happen due
+            # to the design of the models, though, so leave this flag as a check.
+            assert False
             return self.create_boundary_operator(  # type: ignore[call-arg]
                 name=self.total_pressure_variable, domains=domains
             )
-        # Check that the subdomains are grids
+        # Check that the subdomains are grids.
         if not all(isinstance(grid, pp.Grid) for grid in domains):
             raise ValueError(
                 "Method called on a mixture of subdomain and boundary grids."
             )
-        # Now we can cast to Grid
+        # Now we can cast to Grid.
         domains = cast(list[pp.Grid], domains)
 
         if not all([grid.dim == self.nd for grid in domains]):
