@@ -209,6 +209,8 @@ class AngularMomentumEquation:
 
         accumulation = self.inv_mu(subdomains) * self.rotation(subdomains)
 
+        source = self.source_rotation(subdomains)
+
         angular_momentum = self.balance_equation(subdomains, accumulation, total_rotation, source, dim=1)
         angular_momentum.set_name("angular_momentum_balance_equation")
 
@@ -235,7 +237,7 @@ class SolidMassEquation:
         mass_flux = self.solid_mass_flux(subdomains)
 
         source = self.source_solid_mass(subdomains)
-        accumulation = self.inv_lmbda(subdomains) * self.total_pressure(subdomains)
+        accumulation = self.inv_lambda(subdomains) * self.total_pressure(subdomains)
         solid_mass = self.balance_equation(subdomains, accumulation, mass_flux, source, dim=1)
 
         solid_mass.set_name("solid_mass_equation")

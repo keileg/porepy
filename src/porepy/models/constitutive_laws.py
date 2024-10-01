@@ -3139,28 +3139,30 @@ class _ThreeFieldLinearElasticMechanicalStress:
 
     def solid_mass_flux(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
         
-        discr = self.stress_discretization(subdomains)
+        discr = self.stress_discretization(domains)
 
         # Boundary conditions on external boundaries for the displacement variable
         boundary_operator = self.combine_boundary_operators_mechanical_stress(domains)
 
         mass_flux = (
-            discr.mass_displacement() @ self.displacement(subdomains)
-            + discr.mass_total_pressure() @ self.total_pressure(subdomains)
+            discr.mass_displacement() @ self.displacement(domains)
+            + discr.mass_total_pressure() @ self.total_pressure(domains)
             + discr.bound_mass_displacement() @ boundary_operator
         ) 
         return mass_flux
 
     def inv_lambda(self, subdomains):
-        return pp.ad.TimeDependentDenseArray(
-            name="inv_lambda",
-            domains=self.mdg.subdomains(),
+        num_cells = sum(sd.num_cells for sd in subdomains) 
+        return pp.ad.DenseArray(
+            np.zeros(num_cells),
+            name="inv_lambda"
         )
 
     def inv_mu(self, subdomains):
-        return pp.ad.TimeDependentDenseArray(
-            name="inv_mu",
-            domains=self.mdg.subdomains(),
+        num_cells = sum(sd.num_cells for sd in subdomains) 
+        return pp.ad.DenseArray(
+            np.zeros(num_cells),
+            name="inv_mu"
         )
 
 class CosseratMaterial(_ThreeFieldLinearElasticMechanicalStress):
