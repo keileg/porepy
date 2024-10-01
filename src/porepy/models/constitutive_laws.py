@@ -3133,8 +3133,15 @@ class _ThreeFieldLinearElasticMechanicalStress:
         # Boundary conditions on external boundaries for the displacement variable
         boundary_operator = self.combine_boundary_operators_mechanical_stress(domains)
 
+        # Fractures in the domain
+        interfaces = self.subdomains_to_interfaces(domains, [1])
+        proj = pp.ad.MortarProjections(self.mdg, domains, interfaces, dim=self.nd)
+
         return (discr.rotation_displacement() @ self.displacement(domains)
             + discr.bound_rotation_displacement() @ boundary_operator
+            + discr.bound_rotation_displacement()
+            @ proj.mortar_to_primary_avg
+            @ self.interface_displacement(interfaces)
             )
 
     def solid_mass_flux(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
@@ -3144,10 +3151,17 @@ class _ThreeFieldLinearElasticMechanicalStress:
         # Boundary conditions on external boundaries for the displacement variable
         boundary_operator = self.combine_boundary_operators_mechanical_stress(domains)
 
+        # Fractures in the domain
+        interfaces = self.subdomains_to_interfaces(domains, [1])
+        proj = pp.ad.MortarProjections(self.mdg, domains, interfaces, dim=self.nd)
+
         mass_flux = (
             discr.mass_displacement() @ self.displacement(domains)
             + discr.mass_total_pressure() @ self.total_pressure(domains)
             + discr.bound_mass_displacement() @ boundary_operator
+             + discr.bound_mass_displacement()
+            @ proj.mortar_to_primary_avg
+            @ self.interface_displacement(interfaces)           
         ) 
         return mass_flux
 
