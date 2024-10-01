@@ -381,7 +381,16 @@ class VariablesMomentumBalance(VariableMixin):
         )
 
 
-class VariablesThreeFieldMomentumBalance:
+class _VariablesThreeFieldMomentumBalance:
+    """Variables used in the three-field formulation of the momentum balance, needed to
+    use the Tpsa discretization scheme. 
+
+    This class is not meant to be mixed in directly, but is used by other mixin classes,
+    see for instance TpsaMomentumBalanceMixin.
+
+    Mixin this in will add the variables rotation and total pressure to the model.
+
+    """
 
     def create_variables(self) -> None:
         """Set variables related to the three-field formulation of momentuum balance.
@@ -585,7 +594,13 @@ class SolutionStrategyMomentumBalance(pp.SolutionStrategy):
         return self.mdg.dim_min() < self.nd
 
 
-class SolutionStrategyMomentumBalanceThreeField:
+class _SolutionStrategyThreeFieldMomentumBalance:
+    """Solution strategy for the three-field formulation of the momentum balance.
+
+    This class is not meant to be mixed in directly, but is used by other mixin classes,
+    see for instance TpsaMomentumBalanceMixin.
+
+    """
 
     def __init__(self, params: Optional[dict] = None) -> None:
         super().__init__(params)
@@ -626,12 +641,19 @@ class SolutionStrategyMomentumBalanceThreeField:
 
     def set_discretization_parameters(self) -> None:
         """Set discretization parameters for the simulation."""
-
         super().set_discretization_parameters()
-        # Also set boundary conditions for the rotation.
-        for sd, data in self.mdg.subdomains(return_data=True):
-            if sd.dim == self.nd:
-                param = data[pp.PARAMETERS][self.stress_keyword]['bc_rot'] = self.bc_type_rotation(sd)
+
+        # If this model has rotation as truly independent variable (i.e., not as a
+        # derived quantity), for instance if it is used in a Cosserat material model,
+        # then we need to set the discretization parameters for the rotation variable.
+        #
+        # IMPLEMENTATION NOTE: It would arguably have been cleaner to have a separate
+        # solution strategy for Cosserat materials to avoid the below if hasattr check,
+        # but it was decided to not introduce a new class for this purpose.
+        if hasattr(self, "bc_type_rotation"):
+            for sd, data in self.mdg.subdomains(return_data=True):
+                if sd.dim == self.nd:
+                    param = data[pp.PARAMETERS][self.stress_keyword]['bc_rot'] = self.bc_type_rotation(sd)
 
 
 class BoundaryConditionsMomentumBalance(pp.BoundaryConditionMixin):
@@ -782,7 +804,7 @@ class InitialConditionsMomentumBalance(pp.InitialConditionMixin):
         return np.zeros(intf.num_cells * self.nd)
 
 
-class BoundaryConditionsCosseratMaterial:
+class _BoundaryConditionsCosseratMaterial:
     """Boundary conditions for the three-field momentum balance."""
 
     rotation_variable: str
@@ -826,20 +848,20 @@ class BoundaryConditionsCosseratMaterial:
         self.update_boundary_condition(self.rotation_variable, self.bc_values_rotation)
 
 
-class ThreeFieldMomentumBalanceMixin(
-    VariablesThreeFieldMomentumBalance,
+class TpsaMomentumBalanceMixin(
+    _VariablesThreeFieldMomentumBalance,
     AngularMomentumEquation,
     SolidMassEquation,
-    constitutive_laws.ThreeFieldLinearElasticMechanicalStress,
-    SolutionStrategyMomentumBalanceThreeField
+    constitutive_laws._ThreeFieldLinearElasticMechanicalStress,
+    _SolutionStrategyThreeFieldMomentumBalance
 ):
     pass
 
 
 class CosseratMaterialMixin(
     constitutive_laws.CosseratMaterial,
-    boundaryConditionsCosseratMaterial,
-    ThreeFieldMomentumBalanceMixin
+    _BoundaryConditionsCosseratMaterial,
+    TpsaMomentumBalanceMixin
 ):
     pass
 

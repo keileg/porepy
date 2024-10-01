@@ -3011,11 +3011,26 @@ class LinearElasticMechanicalStress(pp.PorePyModel):
         return pp.ad.MpsaAd(self.stress_keyword, subdomains)
 
 
-class ThreeFieldLinearElasticMechanicalStress:
+class _ThreeFieldLinearElasticMechanicalStress:
     """Constitutive laws related to the three-field formulation of a linear elastic
-    medium."""
+    medium.
+    
+    This class is not meant to be mixed in directly, but is used by other mixin classes,
+    see for instance TpsaMomentumBalanceMixin.
 
-    def _rotation_dimension(self):
+    This class define the mechanical stress as a function of the displacement, rotation,
+    and total pressure variables. The class further defines face-wise operators (think
+    generalized fluxes) for the rotation and the solid mass.    
+
+    """
+
+    def _rotation_dimension(self) -> Literal[1, 3]:
+        """Get the dimension of the rotation variable.
+
+        Returns:
+            1 for 2d problems, 3 for 3d problems.
+
+        """
         return 1 if self.nd == 2 else 3
 
     def mechanical_stress(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
@@ -3148,7 +3163,7 @@ class ThreeFieldLinearElasticMechanicalStress:
             domains=self.mdg.subdomains(),
         )
 
-class CosseratMaterial(ThreeFieldLinearElasticMechanicalStress):
+class CosseratMaterial(_ThreeFieldLinearElasticMechanicalStress):
 
     def couple_stress(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
         """Couple stress operator.
