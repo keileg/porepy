@@ -3196,6 +3196,15 @@ class CosseratMaterial(_ThreeFieldLinearElasticMechanicalStress):
                 name=self.rotation_keyword, domains=domains  # type: ignore[call-arg]
             )
 
+        if any([sd.dim != self.nd for sd in self.mdg.subdomains]):
+            # Models that combine Cosserat materials with fracture mechanics have not
+            # been considered, and it is quite likely that this will require further
+            # enhancements of the governing equations. One key question is, what is the
+            # correct treatment of the rotation variable on a fracture interface? For
+            # now, we raise an error if the Cosserat material is used in fractured
+            # domains.
+            raise NotImplementedError("Subdomain must be of co-dimension 0.")
+
         discr = self.stress_discretization(domains)
 
         rotation_boundary = self.combine_boundary_operators_rotation(domains)
