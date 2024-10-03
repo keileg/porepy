@@ -89,6 +89,48 @@ class EquationsPoromechanics(
         )
 
 
+class _SolidMassEquation(momentum.SolidMassEquation):
+    """Solid mass equation for poromechanics.
+
+    This is an extension of the solid mass equation in the three-field formulation of
+    the mechanics problem. The extension is the addition of the fluid pressure term.
+
+    """
+    # TODO: Is inheritance okay here?
+
+    def solid_mass_equation(self, subdomains: list[pp.Grid]) -> pp.ad.Operator:
+        """Extension of the solid mass equation to the poromechanics problem [-].
+
+        For details on the the solid mass equation, and the extension in particular, see
+        https://arxiv.org/pdf/2405.10390 Section 2.1.
+
+        Parameters:
+            subdomains: List of subdomains where the solid mass equation is defined.
+
+        Returns:
+            Operator for the solid mass equation.
+
+        """
+        # The mechanics part of the solid mass equation is the same as in the momentum
+        # balance model.
+        momentum_term = super().solid_mass_equation(subdomains)
+
+        # Add the term related to the fluid pressure.
+        iLambda = self.inv_lambda(subdomains)
+        # Biot coefficient
+        biot = self.biot_coefficient(subdomains)
+
+        pressure_term = self.volume_integral(
+            iLambda * biot * self.pressure(subdomains),
+            subdomains,
+            dim=1,
+        )
+        full_eq = momentum_term - pressure_term
+
+        full_eq.set_name('Solid_mass_equation_poromechanics')
+
+        return full_eq
+
 class VariablesPoromechanics(
     pp.momentum_balance.VariablesMomentumBalance,
     pp.fluid_mass_balance.VariablesSinglePhaseFlow,
@@ -178,6 +220,17 @@ class SolutionStrategyPoromechanics(
             ).flux(),
         )
 
+
+class TpsaPoromechanicsMixin(
+    pp.constitutive_laws._ConstitutiveLawsTpsaPoromechanics,
+    _SolidMassEquation,
+    momentum.TpsaMomentumBalanceMixin,
+):
+    """Mixin for the TPSA poromechanics model.
+
+    Can also be used to define a THM model with Tpsa.
+    """
+    pass
 
 # Note that we ignore a mypy error here. There are some inconsistencies in the method
 # definitions of the mixins, related to the enforcement of keyword-only arguments. The

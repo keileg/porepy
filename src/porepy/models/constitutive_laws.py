@@ -3241,6 +3241,64 @@ class CosseratMaterial(_ThreeFieldLinearElasticMechanicalStress):
         )
         return op        
 
+class _ConstitutiveLawsTpsaPoromechanics:
+    """Mixin class containing constitutive laws for Tpsa discretization of
+    poromechanics.
+
+    The class contains the constitutive laws for a four-field formulation of
+    poromechanics, where solid displacement, fluid pressure, solid pressure and fluid
+    pressure are the primary variables. This formulation is used to make the problem
+    ammenable to the Tpsa discretization. The constitutive laws here are specific to the
+    poromechanical extension of the pure mechanics problem, see also 
+    :class:`~porepy.models.constitutive_laws._ThreeFieldLinearElasticMechanicalStress`.
+
+    """
+
+    def stress(self, subdomains: list[pp.Grid]) -> pp.ad.Operator:
+        """Stress operator [Pa].
+
+        In this formulation, the fluid pressure is not directly included in the stress
+        definition, but is instead included in the total pressure.
+
+        Parameters:
+            subdomains: List of subdomains where the stress is defined.
+
+        Returns:
+            Operator for the stress.
+
+        """
+        # Method from constitutive library's LinearElasticRock.
+        return self.mechanical_stress(subdomains)
+
+    def porosity_change_from_displacement(self, subdomains: list[pp.Grid]) -> pp.ad.Operator:
+        """Porosity change from displacement [-].
+
+        This is intended to override the corresponding method in 
+        :class:`~porepy.models.constitutive_laws.PoroMechanicsPorosity`, to introduce
+        the alternative formulation of the displacement divergence used in the Tpsa
+        formulation. For details, see the Tpsa paper, https://arxiv.org/pdf/2405.10390,
+        specifically sections 1 and 2.1.
+
+        TODO: Is it okay to place this method in this mixin class, or should we have a
+        separate mixin for the TPSA-related changes to the porosity model?
+
+        Parameters:
+            subdomains: List of subdomains where the displacement divergence is defined.
+
+        Returns:
+            Operator for the displacement divergence.
+
+        """
+        alpha = self.biot_coefficient(subdomains)
+        iLambda = self.inv_lambda(subdomains)
+
+        coeff = alpha * iLambda * (self.total_pressure(subdomains) + alpha * self.pressure(subdomains))
+
+        coeff.set_name('displacement_divergence Tpsa formulation')
+
+        return coeff
+
+
 class PressureStress(LinearElasticMechanicalStress):
     """Stress tensor from pressure.
 
@@ -4409,10 +4467,16 @@ class PoroMechanicsPorosity(pp.PorePyModel):
             self.reference_porosity(subdomains)
             + self.porosity_change_from_pressure(subdomains)
             + self.porosity_change_from_displacement(subdomains)
-            + self._mpsa_consistency(
+        )
+
+        if not isinstance(self.stress_discretization(subdomains), pp.ad.TpsaAd):
+            # If the stress discretization is not TPSA, add the consistency term. For
+            # clarity, there is also a consistency term in the TPSA discretization, but
+            # this is already included in the solid mass balance discretization.
+            self._mpsa_consistency(
                 subdomains, self.darcy_keyword, self.pressure_variable
             )
-        )
+        
         phi.set_name("Stabilized matrix porosity")
 
         return phi
