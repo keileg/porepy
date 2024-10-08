@@ -3109,7 +3109,7 @@ class _ThreeFieldLinearElasticMechanicalStress:
         # TODO: This is copied from constitutive laws. Fix
         if len(domains) == 0 or all(isinstance(d, pp.BoundaryGrid) for d in domains):
             return self.create_boundary_operator(
-                name=self.stress_keyword, domains=domains  # type: ignore[call-arg]
+                name=self.rotation_keyword, domains=domains  # type: ignore[call-arg]
             )
 
         # Check that the subdomains are grids.
@@ -3166,18 +3166,27 @@ class _ThreeFieldLinearElasticMechanicalStress:
         return mass_flux
 
     def inv_lambda(self, subdomains):
-        num_cells = sum(sd.num_cells for sd in subdomains) 
-        return pp.ad.DenseArray(
-            np.zeros(num_cells),
-            name="inv_lambda"
-        )
+
+        if len(subdomains) == 0:
+            return pp.wrap_as_dense_ad_array(0, size=0, name="inv_lambda")
+
+        lmbda = []
+        for sd in subdomains:
+            stiffness = self.stiffness_tensor(sd)
+            lmbda.append(1.0 / stiffness.lmbda)
+
+        return pp.ad.DenseArray(np.hstack(lmbda), name="inv_lambda")
 
     def inv_mu(self, subdomains):
-        num_cells = sum(sd.num_cells for sd in subdomains) 
-        return pp.ad.DenseArray(
-            np.zeros(num_cells),
-            name="inv_mu"
-        )
+        if len(subdomains) == 0:
+            return pp.wrap_as_dense_ad_array(0, size=0, name="inv_mu")
+
+        mu = []
+        for sd in subdomains:
+            stiffness = self.stiffness_tensor(sd)
+            mu.append(1.0 / stiffness.mu)
+
+        return pp.ad.DenseArray(np.hstack(mu), name="inv_mu")
 
 class CosseratMaterial(_ThreeFieldLinearElasticMechanicalStress):
 
@@ -4473,7 +4482,7 @@ class PoroMechanicsPorosity(pp.PorePyModel):
             # If the stress discretization is not TPSA, add the consistency term. For
             # clarity, there is also a consistency term in the TPSA discretization, but
             # this is already included in the solid mass balance discretization.
-            self._mpsa_consistency(
+            phi += self._mpsa_consistency(
                 subdomains, self.darcy_keyword, self.pressure_variable
             )
         
