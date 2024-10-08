@@ -207,11 +207,12 @@ class AngularMomentumEquation:
         # sense).
         total_rotation = self.total_rotation(subdomains)
 
-        accumulation = self.inv_mu(subdomains) * self.rotation(subdomains)
+        accumulation = -self.volume_integral(self.inv_mu(subdomains) * self.rotation(subdomains),
+                                                subdomains, dim=self._rotation_dimension())
 
         source = self.source_rotation(subdomains)
 
-        angular_momentum = self.balance_equation(subdomains, accumulation, total_rotation, source, dim=1)
+        angular_momentum = self.balance_equation(subdomains, accumulation, total_rotation, source, dim=self._rotation_dimension())
         angular_momentum.set_name("angular_momentum_balance_equation")
 
         return angular_momentum    
@@ -237,7 +238,7 @@ class SolidMassEquation:
         mass_flux = self.solid_mass_flux(subdomains)
 
         source = self.source_solid_mass(subdomains)
-        accumulation = self.inv_lambda(subdomains) * self.total_pressure(subdomains)
+        accumulation = -self.volume_integral(self.inv_lambda(subdomains) * self.total_pressure(subdomains), subdomains, dim=1)
         solid_mass = self.balance_equation(subdomains, accumulation, mass_flux, source, dim=1)
 
         solid_mass.set_name("solid_mass_equation")
@@ -425,7 +426,7 @@ class _VariablesThreeFieldMomentumBalance:
             dof_info={"cells": rotation_dim},
             name=self.rotation_variable,
             subdomains=matrix_subdomains,
-            tags={"si_units": "rad"},
+            tags={"si_units": "Pa"},
         )
         self.equation_system.create_variables(
             dof_info={"cells": 1},
