@@ -32,6 +32,17 @@ class TailoredThermoporomechanics(
     pp.model_boundary_conditions.BoundaryConditionsMassDirNorthSouth,
     Thermoporomechanics,
 ):
+    """Model with tailored values for testing."""
+
+    pass
+
+
+class TailoredThermoporomechanicsTpsa(
+    pp.poromechanics.TpsaPoromechanicsMixin, TailoredThermoporomechanics
+):
+    """Model with tailored values for testing, using tpsa to discretize the mechanics
+    problem."""
+
     pass
 
 
@@ -97,16 +108,19 @@ def get_variables(model: TailoredThermoporomechanics) -> tuple[np.ndarray, ...]:
         ({"porosity": 0.5}, 0.1),
     ],
 )
-def test_2d_single_fracture(solid_vals: dict, uy_north: float):
+@pytest.mark.parametrize(
+    "model", [TailoredThermoporomechanicsTpsa, TailoredThermoporomechanics]
+)
+def test_2d_single_fracture(solid_vals: dict, uy_north: float, model):
     """Test that the solution is qualitatively sound.
 
     Parameters:
         solid_vals: Dictionary with keys as those in :class:`pp.SolidConstants`
             and corresponding values.
         uy_north: Value of displacement on the north boundary.
+        model: Model class to use.
 
     """
-
     # Create model and run simulation
     model = create_fractured_model(solid_vals, {}, {"u_north": [0.0, uy_north]})
     pp.run_time_dependent_model(model)
