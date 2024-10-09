@@ -493,16 +493,16 @@ class _VariablesThreeFieldMomentumBalance:
                 grids
 
         """
-        if len(domains) == 0 or all(
+        if len(domains) == 0:
+            return pp.wrap_as_dense_ad_array(0, size=0, name="empty_" + self.total_pressure_variable)
+        if all(
             isinstance(grid, pp.BoundaryGrid) for grid in domains
         ):
             # The total pressure should never be invoked on a boundary, it is not a
             # primary variable. EK is not sure whether such a call can still happen due
             # to the design of the models, though, so leave this flag as a check.
             assert False
-            return self.create_boundary_operator(  # type: ignore[call-arg]
-                name=self.total_pressure_variable, domains=domains
-            )
+
         # Check that the subdomains are grids.
         if not all(isinstance(grid, pp.Grid) for grid in domains):
             raise ValueError(
