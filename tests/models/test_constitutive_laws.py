@@ -346,6 +346,8 @@ def test_evaluated_values(
         | Type[models.Thermoporomechanics]
         | Type[models.MassAndEnergyBalance]
         | Type[models.MomentumBalance]
+        | Type[models.CosseratMomentumBalance]
+        | Type[_]
     ),  # noqa
     method_name: Literal[
         "fluid.density",
@@ -358,6 +360,7 @@ def test_evaluated_values(
         "youngs_modulus",
         "elastic_normal_fracture_deformation",
         "permeability",
+        "couple_stress",
     ],
     expected: Any | float | Literal[2370, 12540],
     dimension: Literal[2, 1, 0] | None,
