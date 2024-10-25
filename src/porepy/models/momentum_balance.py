@@ -205,6 +205,7 @@ class ThreeFieldMomentumBalanceEquations(MomentumBalanceEquations):
     def _rotation_dimension(self):
         return 1 if self.nd == 2 else 3
 
+
     def angular_momentum_equation(self, subdomains: list[pp.Grid]) -> pp.ad.Operator:
 
         # Additional equations for conservation of angular momentum and solid mass
@@ -215,15 +216,12 @@ class ThreeFieldMomentumBalanceEquations(MomentumBalanceEquations):
         displacement = self.displacement(subdomains)
 
         rotation_dim = 1 if self.nd == 2 else 3
-
-        stiffness = self.stiffness_tensor(subdomains[0])
-
         if self.nd == 2:
             div_rot = pp.ad.Divergence(subdomains, 1)
-            inv_mu = pp.ad.DenseArray(1 / stiffness.mu)
+            
         else:
             div_rot = pp.ad.Divergence(subdomains, self.nd)
-            inv_mu = pp.ad.DenseArray(1 / np.repeat(stiffness.mu, self.nd))
+        inv_mu = self.inv_mu(subdomains)
 
         rotation = self.rotation(subdomains)
         total_rotation = self.total_rotation(subdomains)
@@ -245,10 +243,9 @@ class ThreeFieldMomentumBalanceEquations(MomentumBalanceEquations):
     def solid_mass_equation(self, subdomains: list[pp.Grid]) -> pp.ad.Operator:
 
         discr = self.stress_discretization(subdomains)
-        stiffness = self.stiffness_tensor(subdomains[0])
+        inv_lmbda = self.inv_lambda(subdomains)
         div_mass = pp.ad.Divergence(subdomains, 1)
-
-        inv_lmbda = pp.ad.DenseArray(1 / stiffness.lmbda)
+        
         # Conservation of solid mass
         volumetric_strain = self.volumetric_strain(subdomains)
         solid_mass = div_mass @ (
@@ -338,6 +335,21 @@ class ConstitutiveLawsThreeFieldMomentumBalance:
         couple_stress = self.couple_stress(domains)
         return (discr.rotation_displacement() @ self.displacement(domains)
             + couple_stress)
+
+    def inv_lambda(self, subdomains):
+        return pp.ad.TimeDependentDenseArray(
+            name="inv_lambda",
+            domains=self.mdg.subdomains(),
+            previous_timestep=True,
+        )
+
+    def inv_mu(self, subdomains):
+        return pp.ad.TimeDependentDenseArray(
+            name="inv_mu",
+            domains=self.mdg.subdomains(),
+            previous_timestep=True,
+        )
+
 
 class VariablesMomentumBalance(VariableMixin):
     """Variables for mixed-dimensional deformation.
