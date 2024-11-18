@@ -207,19 +207,29 @@ class AngularMomentumEquation:
         # sense).
         total_rotation = self.total_rotation(subdomains)
 
-        accumulation = -self.volume_integral(self.inv_mu(subdomains) * self.rotation(subdomains),
-                                                subdomains, dim=self._rotation_dimension())
+        accumulation = -self.volume_integral(
+            self.inv_mu(subdomains) * self.rotation(subdomains),
+            subdomains,
+            dim=self._rotation_dimension(),
+        )
 
         source = self.source_rotation(subdomains)
 
-        angular_momentum = self.balance_equation(subdomains, accumulation, total_rotation, source, dim=self._rotation_dimension())
+        angular_momentum = self.balance_equation(
+            subdomains,
+            accumulation,
+            total_rotation,
+            source,
+            dim=self._rotation_dimension(),
+        )
         angular_momentum.set_name("angular_momentum_balance_equation")
 
-        return angular_momentum    
+        return angular_momentum
 
     def source_rotation(self, subdomains: list[pp.Grid]) -> pp.ad.Operator:
         num_cells = sum(sd.num_cells for sd in subdomains)
         return pp.ad.DenseArray(np.zeros(num_cells), "zero rotation source")
+
 
 class SolidMassEquation:
 
@@ -238,8 +248,14 @@ class SolidMassEquation:
         mass_flux = self.solid_mass_flux(subdomains)
 
         source = self.source_solid_mass(subdomains)
-        accumulation = -self.volume_integral(self.inv_lambda(subdomains) * self.total_pressure(subdomains), subdomains, dim=1)
-        solid_mass = self.balance_equation(subdomains, accumulation, mass_flux, source, dim=1)
+        accumulation = -self.volume_integral(
+            self.inv_lambda(subdomains) * self.total_pressure(subdomains),
+            subdomains,
+            dim=1,
+        )
+        solid_mass = self.balance_equation(
+            subdomains, accumulation, mass_flux, source, dim=1
+        )
 
         solid_mass.set_name("solid_mass_equation")
         return solid_mass
@@ -269,9 +285,6 @@ class ConstitutiveLawsMomentumBalance(
         """
         # Method from constitutive library's LinearElasticRock.
         return self.mechanical_stress(domains)
-
-
-
 
 
 class VariablesMomentumBalance(VariableMixin):
@@ -386,7 +399,7 @@ class VariablesMomentumBalance(VariableMixin):
 
 class _VariablesThreeFieldMomentumBalance:
     """Variables used in the three-field formulation of the momentum balance, needed to
-    use the Tpsa discretization scheme. 
+    use the Tpsa discretization scheme.
 
     This class is not meant to be mixed in directly, but is used by other mixin classes,
     see for instance TpsaMomentumBalanceMixin.
@@ -407,7 +420,7 @@ class _VariablesThreeFieldMomentumBalance:
         Raises:
             ValueError: If the spatial dimension is less than 2.
 
-        """       
+        """
         # Call super to create variables defined by other mixin classes.
         super().create_variables()
 
@@ -470,9 +483,7 @@ class _VariablesThreeFieldMomentumBalance:
         domains = cast(list[pp.Grid], domains)
 
         if not all([grid.dim == self.nd for grid in domains]):
-            raise ValueError(
-                "Rotation is only defined in subdomains of dimension nd."
-            )
+            raise ValueError("Rotation is only defined in subdomains of dimension nd.")
 
         return self.equation_system.md_variable(self.rotation_variable, domains)
 
@@ -494,10 +505,10 @@ class _VariablesThreeFieldMomentumBalance:
 
         """
         if len(domains) == 0:
-            return pp.wrap_as_dense_ad_array(0, size=0, name="empty_" + self.total_pressure_variable)
-        if all(
-            isinstance(grid, pp.BoundaryGrid) for grid in domains
-        ):
+            return pp.wrap_as_dense_ad_array(
+                0, size=0, name="empty_" + self.total_pressure_variable
+            )
+        if all(isinstance(grid, pp.BoundaryGrid) for grid in domains):
             # The total pressure should never be invoked on a boundary, it is not a
             # primary variable. EK is not sure whether such a call can still happen due
             # to the design of the models, though, so leave this flag as a check.
@@ -656,7 +667,9 @@ class _SolutionStrategyThreeFieldMomentumBalance:
         if hasattr(self, "bc_type_rotation"):
             for sd, data in self.mdg.subdomains(return_data=True):
                 if sd.dim == self.nd:
-                    param = data[pp.PARAMETERS][self.stress_keyword]['bc_rot'] = self.bc_type_rotation(sd)
+                    param = data[pp.PARAMETERS][self.stress_keyword]["bc_rot"] = (
+                        self.bc_type_rotation(sd)
+                    )
 
 
 class BoundaryConditionsMomentumBalance(pp.BoundaryConditionMixin):
@@ -813,7 +826,9 @@ class _BoundaryConditionsCosseratMaterial:
     rotation_variable: str
     volumetric_strain_variable: str
 
-    def bc_type_rotation(self, sd: pp.Grid) -> pp.BoundaryCondition | pp.BoundaryConditionVectorial:
+    def bc_type_rotation(
+        self, sd: pp.Grid
+    ) -> pp.BoundaryCondition | pp.BoundaryConditionVectorial:
         """Define type of boundary conditions.
 
         Parameters:
@@ -830,7 +845,7 @@ class _BoundaryConditionsCosseratMaterial:
         else:
             bc = pp.BoundaryConditionVectorial(sd, boundary_faces, "dir")
 
-        return bc        
+        return bc
 
     def bc_values_rotation(self, boundary_grid: pp.Grid) -> np.ndarray:
         """Rotation values for the Dirichlet boundary condition.
@@ -856,7 +871,7 @@ class TpsaMomentumBalanceMixin(
     AngularMomentumEquation,
     SolidMassEquation,
     constitutive_laws._ThreeFieldLinearElasticMechanicalStress,
-    _SolutionStrategyThreeFieldMomentumBalance
+    _SolutionStrategyThreeFieldMomentumBalance,
 ):
     pass
 
@@ -864,10 +879,9 @@ class TpsaMomentumBalanceMixin(
 class CosseratMaterialMixin(
     constitutive_laws.CosseratMaterial,
     _BoundaryConditionsCosseratMaterial,
-    TpsaMomentumBalanceMixin
+    TpsaMomentumBalanceMixin,
 ):
     pass
-
 
 
 # Note that we ignore a mypy error here. There are some inconsistencies in the method

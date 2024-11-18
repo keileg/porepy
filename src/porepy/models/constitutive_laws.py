@@ -3014,13 +3014,13 @@ class LinearElasticMechanicalStress(pp.PorePyModel):
 class _ThreeFieldLinearElasticMechanicalStress:
     """Constitutive laws related to the three-field formulation of a linear elastic
     medium.
-    
+
     This class is not meant to be mixed in directly, but is used by other mixin classes,
     see for instance TpsaMomentumBalanceMixin.
 
     This class define the mechanical stress as a function of the displacement, rotation,
     and total pressure variables. The class further defines face-wise operators (think
-    generalized fluxes) for the rotation and the solid mass.    
+    generalized fluxes) for the rotation and the solid mass.
 
     """
 
@@ -3137,15 +3137,16 @@ class _ThreeFieldLinearElasticMechanicalStress:
         interfaces = self.subdomains_to_interfaces(domains, [1])
         proj = pp.ad.MortarProjections(self.mdg, domains, interfaces, dim=self.nd)
 
-        return (discr.rotation_displacement() @ self.displacement(domains)
+        return (
+            discr.rotation_displacement() @ self.displacement(domains)
             + discr.bound_rotation_displacement() @ boundary_operator
             + discr.bound_rotation_displacement()
             @ proj.mortar_to_primary_avg
             @ self.interface_displacement(interfaces)
-            )
+        )
 
     def solid_mass_flux(self, domains: pp.SubdomainsOrBoundaries) -> pp.ad.Operator:
-        
+
         discr = self.stress_discretization(domains)
 
         # Boundary conditions on external boundaries for the displacement variable
@@ -3159,10 +3160,10 @@ class _ThreeFieldLinearElasticMechanicalStress:
             discr.mass_displacement() @ self.displacement(domains)
             + discr.mass_total_pressure() @ self.total_pressure(domains)
             + discr.bound_mass_displacement() @ boundary_operator
-             + discr.bound_mass_displacement()
+            + discr.bound_mass_displacement()
             @ proj.mortar_to_primary_avg
-            @ self.interface_displacement(interfaces)           
-        ) 
+            @ self.interface_displacement(interfaces)
+        )
         return mass_flux
 
     def inv_lambda(self, subdomains):
@@ -3184,9 +3185,10 @@ class _ThreeFieldLinearElasticMechanicalStress:
         mu = []
         for sd in subdomains:
             stiffness = self.stiffness_tensor(sd)
-            mu.append(1.0 / stiffness.mu)
+            mu.append(np.repeat(1.0 / stiffness.mu, self._rotation_dimension()))
 
         return pp.ad.DenseArray(np.hstack(mu), name="inv_mu")
+
 
 class CosseratMaterial(_ThreeFieldLinearElasticMechanicalStress):
 
@@ -3218,7 +3220,10 @@ class CosseratMaterial(_ThreeFieldLinearElasticMechanicalStress):
 
         rotation_boundary = self.combine_boundary_operators_rotation(domains)
 
-        couple_stress = discr.rotation_diffusion() @ self.rotation(domains) + discr.bound_rotation_diffusion() @ rotation_boundary
+        couple_stress = (
+            discr.rotation_diffusion() @ self.rotation(domains)
+            + discr.bound_rotation_diffusion() @ rotation_boundary
+        )
 
         couple_stress.set_name("Couple stress")
 
@@ -3233,9 +3238,10 @@ class CosseratMaterial(_ThreeFieldLinearElasticMechanicalStress):
         rot = displacement_rotation + cosserat_rotation
         rot.set_name("Total rotation in Cosserat material")
         return rot
-        
 
-    def combine_boundary_operators_rotation(self, domains: pp.subdomainOrBoundary) -> pp.ad.Operator:
+    def combine_boundary_operators_rotation(
+        self, domains: pp.subdomainOrBoundary
+    ) -> pp.ad.Operator:
         # Note that the tpsa discretization has not yet implemented Robin boundary
         # conditions for the rotation variable, thus at the moment, the robin_operator
         # argument must be set to None. For more information, see tpsa.py.
@@ -3248,7 +3254,8 @@ class CosseratMaterial(_ThreeFieldLinearElasticMechanicalStress):
             dim=self.nd,
             name="bc_values_rotation",
         )
-        return op        
+        return op
+
 
 class _ConstitutiveLawsTpsaPoromechanics:
     """Mixin class containing constitutive laws for Tpsa discretization of
@@ -3258,7 +3265,7 @@ class _ConstitutiveLawsTpsaPoromechanics:
     poromechanics, where solid displacement, fluid pressure, solid pressure and fluid
     pressure are the primary variables. This formulation is used to make the problem
     ammenable to the Tpsa discretization. The constitutive laws here are specific to the
-    poromechanical extension of the pure mechanics problem, see also 
+    poromechanical extension of the pure mechanics problem, see also
     :class:`~porepy.models.constitutive_laws._ThreeFieldLinearElasticMechanicalStress`.
 
     """
@@ -3279,10 +3286,12 @@ class _ConstitutiveLawsTpsaPoromechanics:
         # Method from constitutive library's LinearElasticRock.
         return self.mechanical_stress(subdomains)
 
-    def porosity_change_from_displacement(self, subdomains: list[pp.Grid]) -> pp.ad.Operator:
+    def porosity_change_from_displacement(
+        self, subdomains: list[pp.Grid]
+    ) -> pp.ad.Operator:
         """Porosity change from displacement [-].
 
-        This is intended to override the corresponding method in 
+        This is intended to override the corresponding method in
         :class:`~porepy.models.constitutive_laws.PoroMechanicsPorosity`, to introduce
         the alternative formulation of the displacement divergence used in the Tpsa
         formulation. For details, see the Tpsa paper, https://arxiv.org/pdf/2405.10390,
@@ -3301,9 +3310,13 @@ class _ConstitutiveLawsTpsaPoromechanics:
         alpha = self.biot_coefficient(subdomains)
         iLambda = self.inv_lambda(subdomains)
 
-        coeff = alpha * iLambda * (self.total_pressure(subdomains) + alpha * self.pressure(subdomains))
+        coeff = (
+            alpha
+            * iLambda
+            * (self.total_pressure(subdomains) + alpha * self.pressure(subdomains))
+        )
 
-        coeff.set_name('displacement_divergence Tpsa formulation')
+        coeff.set_name("displacement_divergence Tpsa formulation")
 
         return coeff
 
@@ -4485,7 +4498,7 @@ class PoroMechanicsPorosity(pp.PorePyModel):
             phi += self._mpsa_consistency(
                 subdomains, self.darcy_keyword, self.pressure_variable
             )
-        
+
         phi.set_name("Stabilized matrix porosity")
 
         return phi

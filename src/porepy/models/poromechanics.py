@@ -96,6 +96,7 @@ class _SolidMassEquation(momentum.SolidMassEquation):
     the mechanics problem. The extension is the addition of the fluid pressure term.
 
     """
+
     # TODO: Is inheritance okay here?
 
     def solid_mass_equation(self, subdomains: list[pp.Grid]) -> pp.ad.Operator:
@@ -127,9 +128,10 @@ class _SolidMassEquation(momentum.SolidMassEquation):
         )
         full_eq = momentum_term - pressure_term
 
-        full_eq.set_name('Solid_mass_equation_poromechanics')
+        full_eq.set_name("Solid_mass_equation_poromechanics")
 
         return full_eq
+
 
 class VariablesPoromechanics(
     pp.momentum_balance.VariablesMomentumBalance,
@@ -230,7 +232,9 @@ class TpsaPoromechanicsMixin(
 
     Can also be used to define a THM model with Tpsa.
     """
+
     pass
+
 
 # Note that we ignore a mypy error here. There are some inconsistencies in the method
 # definitions of the mixins, related to the enforcement of keyword-only arguments. The
