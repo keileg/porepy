@@ -510,12 +510,11 @@ class Operator:
                     # Again, we do not want to call numpy's matmul method, but instead
                     # directly invoke AdArarray's right matmul.
                     return results[1].__rmatmul__(results[0])
-                # elif isinstance(results[1], np.ndarray) and isinstance(
-                #     results[0], (pp.ad.AdArray, pp.ad.forward_mode.AdArray)
-                # ):
-                #     # Again, we do not want to call numpy's matmul method, but instead
-                #     # directly invoke AdArarray's right matmul.
-                #     return results[0].__rmatmul__(results[1])
+                # Restriction and reconstruction operators have a special way of
+                # being invoked.
+                elif isinstance(results[0], (_RestrictionBySlicing, _ReconstructionBySlicing)):
+                    return results[0].apply(results[1])
+
                 else:
                     return results[0] @ results[1]
             except ValueError as exc:
@@ -2247,3 +2246,237 @@ def sum_operator_list(
         result.set_name(name)
 
     return result
+
+
+#####
+# Below are operators for restriction and reconstruction. These are used in module
+# grid_operators, specifically in the classes SubdomainProjection and MortarProjection.
+# However, they are defined here to avoid circular imports (EK could not find a better
+# solution).
+#####
+
+
+class _RestrictionBySlicing(Operator):
+    """Restriction operator based on slicing.
+    
+    The implementation is based on manipulating the internal data structures of sparse
+    matrices. This is a more efficient implementation than the matrix-based one, but
+    only works for unitary weights.
+
+    Parameters:
+        indices: Indices of the rows to be extracted.
+        name: Name of the operator.
+
+    """
+
+    def __init__(self, indices: np.ndarray, name: str) -> None:
+        self._indices = indices
+        self._name = name
+
+        # The restriction operator is a leaf in the operator tree, and has no children.
+        self.children = []
+
+    def apply(self, x: np.ndarray | sps.spmatrix | pp.ad.AdArray) -> np.ndarray | sps.spmatrix | pp.ad.AdArray:
+        """The slicing operator is implemented as a matrix multiplication.
+
+        We cannot overwrite the __matmul__ method from the Operator class, as the
+        parsing for operator trees is based on it. Instead, the restriction operation is
+        implemented in this apply method, and the parsing system of the main Operator
+        class takes care of calling this method.
+
+        Parameters:
+            x: Array or matrix to be restricted.
+
+        Raises:
+            TypeError: If x is not a supported type.
+
+        Returns:
+            The restricted array or matrix.
+
+        """
+        # Separate handling for different types of input.
+        if isinstance(x, np.ndarray):
+            return x[self._indices]
+        elif isinstance(x, (sps.spmatrix, sps.sparray)):
+            return self._slice_matrix(x)
+        elif isinstance(x, pp.ad.AdArray):
+            val = x.val[self._indices]
+            jac = self._slice_matrix(x.jac)
+            return pp.ad.AdArray(val, jac)
+
+        else:
+            raise TypeError(f"Unsupported type {type(x)}")
+
+    def parse(self, mdg: pp.MixedDimensionalGrid) -> pp.ad.Operator:
+        """See :meth:`Operator.parse`.
+
+        Returns:
+            The restriction operator.
+
+        """
+        return self
+
+    def _slice_matrix(self, A: sps.csr_matrix | sps.csr_array) -> sps.csr_matrix | sps.csr_array:
+        """Slice a matrix based on the indices.
+
+        Parameters:
+            A: Matrix to slice. It must have at least self._indices.size rows, while the
+                number of columns can be arbitrary. 
+
+        Returns:
+            The sliced matrix.
+
+        """
+        if not isinstance(A, (sps.csr_matrix, sps.csr_array)):
+            A = A.tocsr()
+
+        # Data storage for the matrix to be sliced.
+        indptr = A.indptr
+        indices = A.indices
+
+        # Find the size of each target row  (number of non-zero elements).
+        sz = indptr[self._indices+1] - indptr[self._indices]
+        
+        # Get the indices (referring to the fields A.data and A.indices) of the non-zero
+        # elements in the target rows.
+        sub_indices = pp.matrix_operations.mcolon(indptr[self._indices], indptr[self._indices+1])
+        # Get the data of the non-zero elements in the target rows.
+        new_data = A.data[sub_indices]
+        # New indptr for the sliced matrix.
+        new_indptr = np.cumsum(np.concatenate([[0], sz]))
+
+        # IMPLEMENTATION NOTE: Non-unitary weights can be handled by expanding the
+        # weights in the following way:
+        #   expanded_weights = pp.matrix_operations.rldecode(self._weights, sz)
+        #   new_data = expanded_weights * x.data[sub_indices]
+        # However, non-unitary weights will in practice only arise for non-matching
+        # grids, in which case the restriction operator as implemented here is not 
+        # applicable to matrices and AdArrays. In such cases the matrix-based
+        # implementation should be used instead, and the constructor will raise an error
+        # if non-unitary weights are provided.
+
+        # Construct the sliced matrix and return it. Note that the number of columns is
+        # determined by the number of columns in A.
+        return sps.csr_matrix((new_data, indices[sub_indices], new_indptr), shape=(self._indices.size, A.shape[1]))
+
+    def __repr__(self) -> str:
+        s = f"Restriction operator with name {self.name}. "
+        s +=f"Restricts to {self._indices.size} dimensions."
+        return s
+
+
+class _ReconstructionBySlicing(Operator):
+    """Reconstruction operator based on slicing.
+    
+    The implementation is based on manipulating the internal data structures of sparse
+    matrices. This is a more efficient implementation than the matrix-based one, but
+    only works for unitary weights.
+
+    Parameters:
+        indices: Indices of the rows to be extracted.
+        target_size: Size of the reconstructed vector.
+        name: Name of the operator.
+
+    """
+
+
+    def __init__(self, indices: np.ndarray, target_size: int, name: str):
+        self._indices = indices
+        self._target_size = target_size
+        self._name = name
+
+        # The reconstruction operator is a leaf in the operator tree, and has no
+        # children.
+        self.children = []
+
+    def parse(self, mdg: pp.MixedDimensionalGrid) -> pp.ad.Operator:
+        """See :meth:`Operator.parse`.
+
+        Returns:
+            The reconstruction operator.
+
+        """
+        return self        
+
+    def apply(self, x: np.ndarray | sps.spmatrix | pp.ad.AdArray) -> np.ndarray | sps.spmatrix | pp.ad.AdArray:
+        """The slicing operator is implemented as a matrix multiplication.
+
+        We cannot overwrite the __matmul__ method from the Operator class, as the
+        parsing for operator trees is based on it. Instead, the reconstruction operation
+        is implemented in this apply method, and the parsing system of the main Operator
+        class takes care of calling this method.
+
+        Parameters:
+            x: Array or matrix to be Reconstructed.
+
+        Raises:
+            TypeError: If x is not a supported type.
+
+        Returns:
+            The reconstructed array or matrix.
+
+        """        
+        if isinstance(x, np.ndarray):
+            return self._construct_vector(x)
+        elif isinstance(x, (sps.spmatrix, sps.sparray)):
+            return self._construct_matrix(x)
+        elif isinstance(x, pp.ad.AdArray):
+            val = self._construct_vector(x.val)
+            jac = self._construct_matrix(x.jac)
+            return pp.ad.AdArray(val, jac)
+
+    def _construct_vector(self, x: np.ndarray) -> np.ndarray:
+        """Construct a vector of size self._target_size from the input vector x.
+
+        Parameters:
+            x: Vector to be reconstructed.
+
+        Returns:
+            The reconstructed vector.
+
+        """
+        xm = np.zeros(self._target_size)
+        xm[self._indices] = x
+        return xm
+
+
+    def _construct_matrix(self, A: sps.spmatrix) -> sps.spmatrix:
+        """Construct a matrix of size (self._target_size, A.shape[1]) from the input
+        matrix A.
+
+        Parameters:
+            A: Matrix to be reconstructed.
+
+        Returns:
+            The reconstructed matrix.
+
+        """
+        if not isinstance(A, (sps.csr_matrix, sps.csr_array)):
+            A = A.tocsr()
+
+        # Information on the sparsity structure of the matrix to be reconstructed.
+        sub_ind = A.indices
+        sub_indptr = A.indptr
+
+        # Both the data and the indices of the non-zero elements in the reconstructed
+        # matrix can be taken directly from the input matrix, since no non-zero elements
+        # are added in the reconstruction. The only thing that needs to be changed is the
+        # index pointers, that must be adjusted to the new number of rows.
+
+        # Number of non-zero elements in each row of the matrix to be reconstructed.
+        sub_num_elem = np.diff(sub_indptr)
+        # Number of (non-zero) elements in each row of the reconstructed matrix. This is
+        # the same as the number of non-zero elements in the corresponding row of the
+        # input matrix, zero for all other rows.
+        num_elem_per_row = np.zeros(self._target_size, dtype=int)
+        num_elem_per_row[self._indices] = sub_num_elem
+        indptr = np.cumsum(np.concatenate([[0], num_elem_per_row]))
+        # Construct the reconstructed matrix.
+        return sps.csr_matrix((A.data, sub_ind, indptr), shape=(self._target_size, A.shape[1]))
+
+    def __repr__(self) -> str:
+        s = f"Reconstruction operator with name {self.name}. "
+        s +=f"Reconstructs from {self._indices.size} to {self._target_size} dimensions."
+        return s
+
+

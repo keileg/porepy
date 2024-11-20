@@ -2,17 +2,15 @@
 defined here are mainly wrappers that constructs Ad matrices based on grid information.
 
 """
-
 from __future__ import annotations
 
-from typing import Optional, Sequence
-
+from typing import Optional, Sequence, Literal
 import numpy as np
 import scipy.sparse as sps
 
 import porepy as pp
 
-from .operators import Operator, SparseArray
+from .operators import Operator, SparseArray, _RestrictionBySlicing, _ReconstructionBySlicing
 
 __all__ = [
     "BoundaryProjection",
@@ -50,7 +48,7 @@ class SubdomainProjections:
             dim: Dimension of the quantities to be projected.
 
         """
-
+        self._all_subdomains = subdomains
         self._name = "SubdomainProjection"
         self.dim = dim
         self._is_scalar: bool = dim == 1
@@ -74,35 +72,36 @@ class SubdomainProjections:
         self._tot_num_cells: int = sum([g.num_cells for g in subdomains])
         self._tot_num_faces: int = sum([g.num_faces for g in subdomains])
 
-        self._cell_projection, self._face_projection = _subgrid_projections(
-            subdomains, self.dim
-        )
-
     def cell_restriction(self, subdomains: list[pp.Grid]) -> SparseArray:
         """Construct restrictions from global to subdomain cell quantities.
 
         Parameters:
             subdomains: One or several subdomains to which the projection should apply.
 
+        Raises:
+            ValueError: If subdomains is not a list.
+
         Returns:
             pp.ad.SparseArray: Matrix operator (in the Ad sense) that represents the
-            projection.
+                projection.
 
         """
         if not isinstance(subdomains, list):
-            raise ValueError(self._error_message())
+            raise ValueError("Subdomains should be a list of grids")
 
         if len(subdomains) > 0:
-            # A key error will be raised if a grid in g is not known to
-            # self._cell_projection
-            # IMPLEMENTATION NOTE: Use csr format, since the number of rows can
-            # be much less than the number of columns.
-            mat = sps.bmat([[self._cell_projection[g].T] for g in subdomains]).tocsr()
+            # Get the indices of the cells in the target subdomains relative to the
+            # list of all subdomains (as provided in the constructor).
+            target_indices = _target_indices(self._all_subdomains, subdomains, self.dim, 'num_cells')
+            # There is no sense in which the projection weights can be non-unitary, thus
+            # we can safely use a restriction based on slicing.
+            proj = _RestrictionBySlicing(target_indices, name="CellRestriction")
+            return proj
         else:
             # If the grid list is empty, we project from the full set of cells to
             # nothing.
             mat = sps.csr_matrix((0, self._tot_num_cells * self.dim))
-        return pp.ad.SparseArray(mat, name="CellRestriction")
+            return pp.ad.SparseArray(mat, name="CellRestriction")
 
     def cell_prolongation(self, subdomains: list[pp.Grid]) -> SparseArray:
         """Construct prolongation from subdomain to global cell quantities.
@@ -116,18 +115,23 @@ class SubdomainProjections:
 
         """
         if not isinstance(subdomains, list):
-            raise ValueError(self._error_message())
+            raise ValueError("Subdomains should be a list of grids")
+
         if len(subdomains) > 0:
-            # A key error will be raised if a grid in g is not known to
-            # self._cell_projection
-            # IMPLEMENTATION NOTE: Use csc format, since the number of columns can
-            # be much less than the number of rows.
-            mat = sps.bmat([[self._cell_projection[g] for g in subdomains]]).tocsc()
+            # Get the indices of the cells in the target subdomains relative to the
+            # list of all subdomains (as provided in the constructor).
+            target_indices = _target_indices(self._all_subdomains, subdomains, self.dim, 'num_cells')
+            # There is no sense in which the projection weights can be non-unitary, thus
+            # we can safely use a reconstruction based on slicing. The target size for
+            # the reconstruction is computed from the total number of cells in the
+            # list of all subdomains and the dimension of the projection.
+            proj = _ReconstructionBySlicing(target_indices, self._tot_num_cells * self.dim, name="CellProlongation")
+            return proj
         else:
             # If the grid list is empty, we project from nothing to the full set of
-            # cells
+            # cells. CSC format is used for efficiency.
             mat = sps.csc_matrix((self._tot_num_cells * self.dim, 0))
-        return pp.ad.SparseArray(mat, name="CellProlongation")
+            return pp.ad.SparseArray(mat, name="CellProlongation")
 
     def face_restriction(self, subdomains: list[pp.Grid]) -> SparseArray:
         """Construct restrictions from global to subdomain face quantities.
@@ -141,17 +145,22 @@ class SubdomainProjections:
                 projection.
 
         """
+        if not isinstance(subdomains, list):
+            raise ValueError("Subdomains should be a list of grids")
+
         if len(subdomains) > 0:
-            # A key error will be raised if a grid in subdomains is not known to
-            # self._face_projection
-            # IMPLEMENTATION NOTE: Use csr format, since the number of rows can
-            # be much less than the number of columns.
-            mat = sps.bmat([[self._face_projection[g].T] for g in subdomains]).tocsr()
+            # Get the indices of the faces in the target subdomains relative to the
+            # list of all subdomains (as provided in the constructor).
+            target_indices = _target_indices(self._all_subdomains, subdomains, self.dim, 'num_faces')
+            # There is no sense in which the projection weights can be non-unitary, thus
+            # we can safely use a restriction based on slicing.
+            proj = _RestrictionBySlicing(target_indices, name="FaceRestriction")
+            return proj
         else:
             # If the grid list is empty, we project from the full set of faces to
             # nothing.
             mat = sps.csr_matrix((0, self._tot_num_faces * self.dim))
-        return pp.ad.SparseArray(mat, name="FaceRestriction")
+            return pp.ad.SparseArray(mat, name="FaceRestriction")
 
     def face_prolongation(self, subdomains: list[pp.Grid]) -> SparseArray:
         """Construct prolongation from subdomain to global face quantities.
@@ -164,17 +173,24 @@ class SubdomainProjections:
             prolongation.
 
         """
+        if not isinstance(subdomains, list):
+            raise ValueError("Subdomains should be a list of grids")
+
         if len(subdomains) > 0:
-            # A key error will be raised if a grid in subdomains is not known to
-            # self._face_projection
-            # IMPLEMENTATION NOTE: Use csc format, since the number of columns can
-            # be far smaller than the number of rows.
-            mat = sps.bmat([[self._face_projection[g] for g in subdomains]]).tocsc()
+            # Get the indices of the faces in the target subdomains relative to the
+            # list of all subdomains (as provided in the constructor).
+            target_indices = _target_indices(self._all_subdomains, subdomains, self.dim, 'num_faces')
+            # There is no sense in which the projection weights can be non-unitary, thus
+            # we can safely use a reconstruction based on slicing. The target size for
+            # the reconstruction is computed from the total number of faces in the
+            # list of all subdomains and the dimension of the projection.
+            proj = _ReconstructionBySlicing(target_indices, self._tot_num_faces * self.dim, name="FaceProlongation")
+            return proj
         else:
             # If the grid list is empty, we project from nothing to the full set of
-            # faces
+            # faces.
             mat = sps.csc_matrix((self._tot_num_faces * self.dim, 0))
-        return pp.ad.SparseArray(mat, name="FaceProlongation")
+            return pp.ad.SparseArray(mat, name="FaceProlongation")
 
     def __repr__(self) -> str:
         s = (
@@ -183,9 +199,6 @@ class SubdomainProjections:
             f"Aimed at variables with dimension {self.dim}\n"
         )
         return s
-
-    def _error_message(self):
-        return "Argument should be a subdomain grid or a list of subdomain grids"
 
 
 class MortarProjections:
@@ -701,6 +714,39 @@ class Divergence(Operator):
             ]
         matrix = sps.block_diag(mat)
         return matrix
+
+
+def _target_indices(all_grids: pp.GridLikeSequence, target_grids: pp.GridLikeSequence,
+     dim: int, grid_attribute: Literal['num_cells', 'num_faces']) -> np.ndarray:
+    """Get the indices of the target grids in the full set of grids.
+
+    Parameters:
+        all_grids: All grids in the problem.
+        target_grids: The grids to be extracted.
+        dim: Dimension of the quantities to be projected.
+        grid_attribute: The attribute of the grid to be used for the extraction. Should
+            be either 'num_cells' or 'num_faces'; 'num_faces' should only be used for 
+            actual grids (not mortar or boundary grids).
+
+    Returns:
+        The indices of the target grids in the full set of grids.
+
+    """
+    # Get the number of cells or faces in each grid.
+    all_indices = np.array([getattr(g, grid_attribute) for g in all_grids])
+    
+    # Get the offset for each grid, adjusted for the dimension of the quantities.
+    offset = dim * np.cumsum(np.concatenate([[0], all_indices]))
+
+    target_indices = []
+
+    # Loop over all target grids, finds the indices of the grid attributes in the full
+    # set of grids.
+    for g in target_grids:
+        ind = all_grids.index(g)
+        target_indices.append(np.arange(offset[ind], offset[ind+1]))
+
+    return np.concatenate(target_indices)
 
 
 def _subgrid_projections(
