@@ -2255,6 +2255,38 @@ def sum_operator_list(
 # solution).
 #####
 
+class _RestrictionByMatrix:
+
+    def __init__(self, indices: np.ndarray, weights: np.ndarray, sz: int) -> None:
+        self._indices = indices
+        self._weights = weights
+        self._mat = sps.csr_matrix((np.ones_like(indices), 
+            (np.arange(indices.size), indices)), shape=(indices.size, sz))
+
+    def __matmul__(self, x: np.ndarray | sps.spmatrix) -> np.ndarray | sps.spmatrix:
+        return self._mat @ x
+
+    def __repr__(self) -> str:
+        s = f"Restriction operator from {self._mat.shape[1]} to {self._mat.shape[0]}"
+        s += "indices."
+        if np.allclose(self._weights, 1, tol=1e-12):
+            s += "\n"
+            s += "All weights are 1."
+        return s
+
+class ReconstructionByMatrix:
+
+    def __init__(self, indices: np.ndarray, target_size: int):
+        self._indices = indices
+        self._target_size = target_size
+        self._mat = sps.csr_matrix((np.ones_like(indices), 
+            (indices, np.arange(indices.size))), shape=(self._target_size, self._indices.size))
+
+
+    def __matmul__(self, x: np.ndarray | sps.spmatrix | pp.ad.AdArray) -> np.ndarray | sps.spmatrix | pp.ad.AdArray:
+        return self._mat @ x
+
+
 
 class _RestrictionBySlicing(Operator):
     """Restriction operator based on slicing.
