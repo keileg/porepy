@@ -262,6 +262,36 @@ class MortarProjections:
         self._name = "MortarProjection"
         self._num_edges: int = len(interfaces)
         self.dim: int = dim
+        self._subdomains = subdomains
+        self._interfaces = interfaces
+
+
+        primary_pairs, secondary_pairs = [], []
+        for intf in interfaces:
+            sd_primary, sd_secondary = mdg.interface_to_subdomain_pair(intf)
+            if sd_primary in subdomains:
+                primary_pairs.append((sd_primary, intf))
+            if sd_secondary in subdomains:
+                secondary_pairs.append((sd_secondary, intf))
+
+        self._num_faces_primary_sd = self.dim * sum([sd.num_faces for sd, _ in primary_pairs])
+        self._num_cells_secondary_sd = self.dim * sum([sd.num_cells for sd, _ in secondary_pairs])
+        self._num_cells_mortar = self.dim * sum([intf.num_cells for intf in interfaces])
+
+
+        primary_sd_inds, primary_intf_inds = [], []
+        secondary_sd_inds, secondary_intf_inds = [], []
+        for sd, intf in primary_pairs:
+            primary_sd_inds.append(_target_indices(subdomains, [sd], dim, 'num_faces'))
+            primary_intf_inds.append(_target_indices(interfaces, [intf], dim, 'num_cells'))
+        for sd, intf in secondary_pairs:
+            secondary_sd_inds.append(_target_indices(subdomains, [sd], dim, 'num_cells'))
+            secondary_intf_inds.append(_target_indices(interfaces, [intf], dim, 'num_cells'))
+
+        self._primary_sd_inds = primary_sd_inds
+        self._primary_intf_inds = primary_intf_inds
+        self._secondary_sd_inds = secondary_sd_inds
+        self._secondary_intf_inds = secondary_intf_inds
 
         # Initialize projections
         cell_projection, face_projection = _subgrid_projections(subdomains, self.dim)
@@ -501,6 +531,55 @@ class MortarProjections:
             self.sign_of_mortar_sides = SparseArray(
                 sps.block_diag(mats), name="SignOfMortarSides"
             )
+
+    def mortar_to_primary_int(self) -> Operator:
+        return _RestrictionBySlicing(domain_indices=self._primary_intf_inds,
+                                    range_indices=self._primary_sd_inds,
+                                    range_size=self._num_faces_primary_sd,
+                                    name="PrimaryToMortarInt")
+
+    
+    def mortar_to_primary_avg(self) -> Operator:
+        return _RestrictionBySlicing(domain_indices=self._primary_intf_inds,
+                                    range_indices=self._primary_sd_inds,
+                                    range_size=self._num_faces_primary_sd,
+                                    name="PrimaryToMortarAvg")
+
+    def primary_to_mortar_int(self) -> Operator:
+        return _RestrictionBySlicing(domain_indices=self._primary_sd_inds,
+                                    range_indices=self._primary_intf_inds,
+                                    range_size=self._num_cells_mortar,
+                                    name="PrimaryToMortarInt")
+    
+    def primary_to_mortar_avg(self) -> Operator:
+        return _RestrictionBySlicing(domain_indices=self._primary_sd_inds,
+                                    range_indices=self._primary_intf_inds,
+                                    range_size=self._num_cells_mortar,
+                                    name="PrimaryToMortarAvg")
+
+    def mortar_to_secondary_int(self) -> Operator:
+        return _RestrictionBySlicing(domain_indices=self._secondary_intf_inds,
+                                    range_indices=self._secondary_sd_inds,
+                                    range_size=self._num_cells_secondary_sd,
+                                    name="SecondaryToMortarInt")
+
+    def mortar_to_secondary_avg(self) -> Operator:
+        return _RestrictionBySlicing(domain_indices=self._secondary_intf_inds,
+                                    range_indices=self._secondary_sd_inds,
+                                    range_size=self._num_cells_secondary_sd,
+                                    name="SecondaryToMortarAvg")
+
+    def secondary_to_mortar_int(self) -> Operator:
+        return _RestrictionBySlicing(domain_indices=self._secondary_sd_inds,
+                                    range_indices=self._secondary_intf_inds,
+                                    range_size=self._num_cells_mortar,
+                                    name="SecondaryToMortarInt")
+
+    def secondary_to_mortar_avg(self) -> Operator:
+        return _RestrictionBySlicing(domain_indices=self._secondary_sd_inds,
+                                    range_indices=self._secondary_intf_inds,
+                                    range_size=self._num_cells_mortar,
+                                    name="SecondaryToMortarAvg")
 
     def __repr__(self) -> str:
         s = (
@@ -743,6 +822,7 @@ def _target_indices(all_grids: pp.GridLikeSequence, target_grids: pp.GridLikeSeq
     # Loop over all target grids, finds the indices of the grid attributes in the full
     # set of grids.
     for g in target_grids:
+        # If a ValueError is raised here, g is likely not in all_grids.
         ind = all_grids.index(g)
         target_indices.append(np.arange(offset[ind], offset[ind+1]))
 
