@@ -799,7 +799,7 @@ class DarcysLaw(PorePyModel):
         pressure_trace = (
             discr.bound_pressure_cell() @ p
             + discr.bound_pressure_face()
-            @ (projection.mortar_to_primary_int @ self.interface_darcy_flux(interfaces))
+            @ (projection._mortar_to_primary_int() @ self.interface_darcy_flux(interfaces))
             + discr.bound_pressure_face() @ boundary_operator
             + discr.bound_pressure_vector_source()
             @ self.vector_source_darcy_flux(subdomains)

@@ -512,7 +512,7 @@ class Operator:
                     return results[1].__rmatmul__(results[0])
                 # Restriction and reconstruction operators have a special way of
                 # being invoked.
-                elif isinstance(results[0], (_RestrictionBySlicing, _ReconstructionBySlicing)):
+                elif isinstance(results[0], (_RestrictionBySlicing)):
                     return results[0].apply(results[1])
 
                 else:

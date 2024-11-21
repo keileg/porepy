@@ -10,7 +10,7 @@ import scipy.sparse as sps
 
 import porepy as pp
 
-from .operators import Operator, SparseArray, _RestrictionBySlicing, _ReconstructionBySlicing
+from .operators import Operator, SparseArray, _RestrictionBySlicing
 
 __all__ = [
     "BoundaryProjection",
@@ -288,10 +288,22 @@ class MortarProjections:
             secondary_sd_inds.append(_target_indices(subdomains, [sd], dim, 'num_cells'))
             secondary_intf_inds.append(_target_indices(interfaces, [intf], dim, 'num_cells'))
 
-        self._primary_sd_inds = primary_sd_inds
-        self._primary_intf_inds = primary_intf_inds
-        self._secondary_sd_inds = secondary_sd_inds
-        self._secondary_intf_inds = secondary_intf_inds
+        if len(primary_sd_inds) > 0:
+            self._primary_sd_inds = np.hstack(primary_sd_inds)
+        else:
+            self._primary_sd_inds = np.array([], dtype=int)
+        if len(primary_intf_inds) > 0:
+            self._primary_intf_inds = np.hstack(primary_intf_inds)
+        else:
+            self._primary_intf_inds = np.array([], dtype=int)
+        if len(secondary_sd_inds) > 0:
+            self._secondary_sd_inds = np.hstack(secondary_sd_inds)
+        else:
+            self._secondary_sd_inds = np.array([], dtype=int)
+        if len(secondary_intf_inds) > 0:
+            self._secondary_intf_inds = np.hstack(secondary_intf_inds)
+        else:
+            self._secondary_intf_inds = np.array([], dtype=int)
 
         # Initialize projections
         cell_projection, face_projection = _subgrid_projections(subdomains, self.dim)
@@ -532,7 +544,7 @@ class MortarProjections:
                 sps.block_diag(mats), name="SignOfMortarSides"
             )
 
-    def mortar_to_primary_int(self) -> Operator:
+    def _mortar_to_primary_int(self) -> Operator:
         return _RestrictionBySlicing(domain_indices=self._primary_intf_inds,
                                     range_indices=self._primary_sd_inds,
                                     range_size=self._num_faces_primary_sd,
