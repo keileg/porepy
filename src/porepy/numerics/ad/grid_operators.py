@@ -95,7 +95,7 @@ class SubdomainProjections:
             target_indices = _target_indices(self._all_subdomains, subdomains, self.dim, 'num_cells')
             # There is no sense in which the projection weights can be non-unitary, thus
             # we can safely use a restriction based on slicing.
-            proj = _RestrictionBySlicing(target_indices, name="CellRestriction")
+            proj = _RestrictionBySlicing(domain_indices=target_indices, name="CellRestriction")
             return proj
         else:
             # If the grid list is empty, we project from the full set of cells to
@@ -125,7 +125,7 @@ class SubdomainProjections:
             # we can safely use a reconstruction based on slicing. The target size for
             # the reconstruction is computed from the total number of cells in the
             # list of all subdomains and the dimension of the projection.
-            proj = _ReconstructionBySlicing(target_indices, self._tot_num_cells * self.dim, name="CellProlongation")
+            proj = _RestrictionBySlicing(range_indices=target_indices, range_size=self._tot_num_cells * self.dim, name="CellProlongation")
             return proj
         else:
             # If the grid list is empty, we project from nothing to the full set of
@@ -154,7 +154,7 @@ class SubdomainProjections:
             target_indices = _target_indices(self._all_subdomains, subdomains, self.dim, 'num_faces')
             # There is no sense in which the projection weights can be non-unitary, thus
             # we can safely use a restriction based on slicing.
-            proj = _RestrictionBySlicing(target_indices, name="FaceRestriction")
+            proj = _RestrictionBySlicing(domain_indices=target_indices, name="FaceRestriction")
             return proj
         else:
             # If the grid list is empty, we project from the full set of faces to
@@ -184,7 +184,7 @@ class SubdomainProjections:
             # we can safely use a reconstruction based on slicing. The target size for
             # the reconstruction is computed from the total number of faces in the
             # list of all subdomains and the dimension of the projection.
-            proj = _ReconstructionBySlicing(target_indices, self._tot_num_faces * self.dim, name="FaceProlongation")
+            proj = _RestrictionBySlicing(range_indices=target_indices, range_size=self._tot_num_faces * self.dim, name="FaceProlongation")
             return proj
         else:
             # If the grid list is empty, we project from nothing to the full set of
