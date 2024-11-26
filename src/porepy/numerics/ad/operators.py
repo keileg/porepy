@@ -2415,5 +2415,16 @@ class _RestrictionBySlicing(Operator):
             new_num_rows = self._range_size
 
         new_indptr = np.cumsum(np.concatenate(([0], num_elem_per_row)))
-
         return sps.csr_matrix((new_data, new_indices, new_indptr), shape=(new_num_rows, A.shape[1]))
+
+    def __repr__(self) -> str:
+        s = f"Restriction slicing operator.\n"
+        if self._domain_indices is not None:
+            s += f"Number of domain indices: {self._domain_indices.size}. "
+        if self._range_indices is not None:
+            s += f"Number of range indices: {self._range_indices.size}. "
+            s += f"Range size: {self._range_size}."
+        s += "\n"
+        s += "All weights are 1.\n"
+        return s
+
