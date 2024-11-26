@@ -274,19 +274,24 @@ class MortarProjections:
             if sd_secondary in subdomains:
                 secondary_pairs.append((sd_secondary, intf))
 
-        self._num_faces_primary_sd = self.dim * sum([sd.num_faces for sd, _ in primary_pairs])
-        self._num_cells_secondary_sd = self.dim * sum([sd.num_cells for sd, _ in secondary_pairs])
+        self._num_faces_primary_sd = self.dim * sum([sd.num_faces for sd in subdomains])
+        self._num_cells_secondary_sd = self.dim * sum([sd.num_cells for sd in subdomains])
         self._num_cells_mortar = self.dim * sum([intf.num_cells for intf in interfaces])
 
+        offset_face_subdomains = np.cumsum([0] + [sd.num_faces for sd in subdomains])
+        offset_cell_subdomains = np.cumsum([0] + [sd.num_cells for sd in subdomains])
+        offset_cell_mortar = np.cumsum([0] + [intf.num_cells for intf in interfaces])
 
         primary_sd_inds, primary_intf_inds = [], []
         secondary_sd_inds, secondary_intf_inds = [], []
         for sd, intf in primary_pairs:
-            primary_sd_inds.append(_target_indices(subdomains, [sd], dim, 'num_faces'))
-            primary_intf_inds.append(_target_indices(interfaces, [intf], dim, 'num_cells'))
+            sd_faces, mg_cells, weights = sps.find(intf.mortar_to_primary_int(dim))
+            primary_sd_inds.append(_target_indices(subdomains, [sd], dim, 'num_faces', [sd_faces]))
+            primary_intf_inds.append(_target_indices(interfaces, [intf], dim, 'num_cells', [mg_cells]))
         for sd, intf in secondary_pairs:
-            secondary_sd_inds.append(_target_indices(subdomains, [sd], dim, 'num_cells'))
-            secondary_intf_inds.append(_target_indices(interfaces, [intf], dim, 'num_cells'))
+            sd_cells, mg_cells, weights = sps.find(intf.mortar_to_secondary_int(dim))
+            secondary_sd_inds.append(_target_indices(subdomains, [sd], dim, 'num_cells', [sd_cells]))
+            secondary_intf_inds.append(_target_indices(interfaces, [intf], dim, 'num_cells', [mg_cells]))
 
         if len(primary_sd_inds) > 0:
             self._primary_sd_inds = np.hstack(primary_sd_inds)
@@ -808,7 +813,7 @@ class Divergence(Operator):
 
 
 def _target_indices(all_grids: pp.GridLikeSequence, target_grids: pp.GridLikeSequence,
-     dim: int, grid_attribute: Literal['num_cells', 'num_faces']) -> np.ndarray:
+     dim: int, grid_attribute: Literal['num_cells', 'num_faces'], indices: Optional[list[np.ndarray]]=None) -> np.ndarray:
     """Get the indices of the target grids in the full set of grids.
 
     Parameters:
@@ -823,6 +828,11 @@ def _target_indices(all_grids: pp.GridLikeSequence, target_grids: pp.GridLikeSeq
         The indices of the target grids in the full set of grids.
 
     """
+    if indices is None:
+        indices = []
+        for g in target_grids:
+            indices.append(np.arange(getattr(g, grid_attribute)))
+
     # Get the number of cells or faces in each grid.
     all_indices = np.array([getattr(g, grid_attribute) for g in all_grids])
     
@@ -833,10 +843,10 @@ def _target_indices(all_grids: pp.GridLikeSequence, target_grids: pp.GridLikeSeq
 
     # Loop over all target grids, finds the indices of the grid attributes in the full
     # set of grids.
-    for g in target_grids:
+    for g, inds in zip(target_grids, indices):
         # If a ValueError is raised here, g is likely not in all_grids.
         ind = all_grids.index(g)
-        target_indices.append(np.arange(offset[ind], offset[ind+1]))
+        target_indices.append(offset[ind] + dim * inds)
 
     return np.concatenate(target_indices)
 
