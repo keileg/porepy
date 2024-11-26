@@ -24,11 +24,18 @@ __all__ = [
 class SubdomainProjections:
     """Wrapper class for generating projection to and from subdomains.
 
-    One use case in when variables are defined on only some subdomains.
-
     The class should be used through the methods {cell, face}_{projection, restriction}.
 
-    See also MortarProjections for projections to and from mortar subdomains.
+    Parameters:
+        subdomains: List of grids for which the projections should map to and from.
+        dim: Dimension of the quantities to be mapped. Will typically be 1 (for scalar
+            quantities) or Nd (the ambient dimension, for vector quantities).
+
+    Raises:
+        ValueError: If a subdomain occur more than once in the input list.
+
+    See also:
+        MortarProjections for projections to and from mortar subdomains.
 
     """
 
@@ -550,49 +557,50 @@ class MortarProjections:
             )
 
     def _mortar_to_primary_int(self) -> Operator:
-        return _RestrictionBySlicing(domain_indices=self._primary_intf_inds,
+        proj = _RestrictionBySlicing(domain_indices=self._primary_intf_inds,
                                     range_indices=self._primary_sd_inds,
                                     range_size=self._num_faces_primary_sd,
                                     name="PrimaryToMortarInt")
+        return proj
 
     
-    def mortar_to_primary_avg(self) -> Operator:
+    def _mortar_to_primary_avg(self) -> Operator:
         return _RestrictionBySlicing(domain_indices=self._primary_intf_inds,
                                     range_indices=self._primary_sd_inds,
                                     range_size=self._num_faces_primary_sd,
                                     name="PrimaryToMortarAvg")
 
-    def primary_to_mortar_int(self) -> Operator:
+    def _primary_to_mortar_int(self) -> Operator:
         return _RestrictionBySlicing(domain_indices=self._primary_sd_inds,
                                     range_indices=self._primary_intf_inds,
                                     range_size=self._num_cells_mortar,
                                     name="PrimaryToMortarInt")
     
-    def primary_to_mortar_avg(self) -> Operator:
+    def _primary_to_mortar_avg(self) -> Operator:
         return _RestrictionBySlicing(domain_indices=self._primary_sd_inds,
                                     range_indices=self._primary_intf_inds,
                                     range_size=self._num_cells_mortar,
                                     name="PrimaryToMortarAvg")
 
-    def mortar_to_secondary_int(self) -> Operator:
+    def _mortar_to_secondary_int(self) -> Operator:
         return _RestrictionBySlicing(domain_indices=self._secondary_intf_inds,
                                     range_indices=self._secondary_sd_inds,
                                     range_size=self._num_cells_secondary_sd,
                                     name="SecondaryToMortarInt")
 
-    def mortar_to_secondary_avg(self) -> Operator:
+    def _mortar_to_secondary_avg(self) -> Operator:
         return _RestrictionBySlicing(domain_indices=self._secondary_intf_inds,
                                     range_indices=self._secondary_sd_inds,
                                     range_size=self._num_cells_secondary_sd,
                                     name="SecondaryToMortarAvg")
 
-    def secondary_to_mortar_int(self) -> Operator:
+    def _secondary_to_mortar_int(self) -> Operator:
         return _RestrictionBySlicing(domain_indices=self._secondary_sd_inds,
                                     range_indices=self._secondary_intf_inds,
                                     range_size=self._num_cells_mortar,
                                     name="SecondaryToMortarInt")
 
-    def secondary_to_mortar_avg(self) -> Operator:
+    def _secondary_to_mortar_avg(self) -> Operator:
         return _RestrictionBySlicing(domain_indices=self._secondary_sd_inds,
                                     range_indices=self._secondary_intf_inds,
                                     range_size=self._num_cells_mortar,
