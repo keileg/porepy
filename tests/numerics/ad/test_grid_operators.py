@@ -673,7 +673,7 @@ def _projection_matrix_from_slicing(proj):
         return expanded_proj_mat
     else:
         # The range is not specified, return the matrix as is.
-        return expanded_proj_mat
+        return proj_mat
 
 
 
