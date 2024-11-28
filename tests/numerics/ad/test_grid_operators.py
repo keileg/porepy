@@ -38,6 +38,7 @@ def test_subdomain_projections(mdg, scalar):
         3. Combined projections for a list of grids.
 
     """
+    # First some bookkeeping.
     proj_dim = 1 if scalar else mdg.dim_max()
     n_cells, n_faces, _ = geometry_information(mdg, proj_dim)
 
@@ -64,7 +65,10 @@ def test_subdomain_projections(mdg, scalar):
         col_face = pp.fvutils.expand_indices_nd(face_inds, dim)
         return row_cell, col_cell, data_cell, row_face, col_face, data_face
 
-    # Test projections to and from an empty list of subdomains.
+    # Test projections to and from an empty list of subdomains. The SubdomainProjection
+    # class returns a sparse matrix in this case, hence we can do a standard shape check
+    # (no need for the _projection_matrix_from_slicing helper function, used in the
+    # below test).
     assert proj.cell_restriction([]).shape == (0, n_cells)
     assert proj.cell_prolongation([]).shape == (n_cells, 0)
     assert proj.face_restriction([]).shape == (0, n_faces)
@@ -72,6 +76,8 @@ def test_subdomain_projections(mdg, scalar):
 
     # Test projection of one fracture at a time for the full set of grids.
     for sd in subdomains:
+
+        # Fetch information needed to construct the known projection matrices.
         ind = _list_ind_of_grid(subdomains, sd)
 
         nc, nf = sd.num_cells, sd.num_faces
@@ -90,10 +96,30 @@ def test_subdomain_projections(mdg, scalar):
             (data_face, (row_face, col_face)), shape=(num_rows_face, n_faces)
         ).tocsr()
 
-        assert _compare_matrices(proj.cell_restriction([sd]), known_cell_proj)
-        assert _compare_matrices(proj.cell_prolongation([sd]), known_cell_proj.T)
-        assert _compare_matrices(proj.face_restriction([sd]), known_face_proj)
-        assert _compare_matrices(proj.face_prolongation([sd]), known_face_proj.T)
+        # Test restriction and prolongation for cells and faces. This is done by
+        # reconstructing the matrix form of the (slicing-based) projection operator and
+        # comparing it to the known projection matrix.
+
+        # Cell restrction. This is a mapping from all to one subdomain, but the
+        # reconsructed matrix will only have as many columns as the cells in the
+        # subdomain (this reflects that the projection operator works on rows only and
+        # is agnostic to the number of columns). We can therefore only compare to the
+        # columns corresponding to the subdomain.
+        proj_matrix_cell_restriction = _projection_matrix_from_slicing(proj.cell_restriction([sd]))
+        assert np.allclose(proj_matrix_cell_restriction, known_cell_proj.toarray()[:, col_cell])
+
+        # Cell prolongation. This is a mapping from one to all subdomains, hence the
+        # reconstruced matrix will have the correct number of cells (as well as columns,
+        # since this corresponds to the range size parameter given to the projection).
+        # Hence, we can compare the entire matrix.
+        proj_matrix_cell_prolongation = _projection_matrix_from_slicing(proj.cell_prolongation([sd]))
+        assert np.allclose(proj_matrix_cell_prolongation, known_cell_proj.T.toarray())
+
+        # Face restriction and prolongation are tested in the same way.
+        proj_matrix_face_restriction = _projection_matrix_from_slicing(proj.face_restriction([sd]))
+        assert np.allclose(proj_matrix_face_restriction, known_face_proj.toarray()[:, col_face])
+        proj_matrix_face_prolongation = _projection_matrix_from_slicing(proj.face_prolongation([sd]))
+        assert np.allclose(proj_matrix_face_prolongation, known_face_proj.T.toarray())
 
     # Project between the full grid and both 1d grids (to combine two grids).
     g1, g2 = mdg.subdomains(dim=1)
@@ -129,10 +155,18 @@ def test_subdomain_projections(mdg, scalar):
         shape=(num_rows_face, n_faces),
     ).tocsr()
 
-    assert _compare_matrices(proj.cell_restriction([g1, g2]), known_cell_proj)
-    assert _compare_matrices(proj.cell_prolongation([g1, g2]), known_cell_proj.T)
-    assert _compare_matrices(proj.face_restriction([g1, g2]), known_face_proj)
-    assert _compare_matrices(proj.face_prolongation([g1, g2]), known_face_proj.T)
+    # See above (test of one subdomain at a time) for comments on the comparison.
+    proj_matrix_cell_restriction = _projection_matrix_from_slicing(proj.cell_restriction([g1, g2]))
+    assert np.allclose(proj_matrix_cell_restriction, known_cell_proj.toarray()[:, np.hstack((cc1, cc2))])
+
+    proj_matrix_cell_prolongation = _projection_matrix_from_slicing(proj.cell_prolongation([g1, g2]))
+    assert np.allclose(proj_matrix_cell_prolongation, known_cell_proj.T.toarray())
+
+    proj_matrix_face_restriction = _projection_matrix_from_slicing(proj.face_restriction([g1, g2]))
+    assert np.allclose(proj_matrix_face_restriction, known_face_proj.toarray()[:, np.hstack((cf1, cf2))])
+
+    proj_matrix_face_prolongation = _projection_matrix_from_slicing(proj.face_prolongation([g1, g2]))
+    assert np.allclose(proj_matrix_face_prolongation, known_face_proj.T.toarray())
 
 
 def test_mortar_projections_empty_list(mdg):
@@ -581,3 +615,65 @@ def geometry_information(
     n_faces = sum([sd.num_faces for sd in mdg.subdomains()]) * dim
     n_mortar_cells = sum([intf.num_cells for intf in mdg.interfaces()]) * dim
     return n_cells, n_faces, n_mortar_cells
+
+def _projection_matrix_from_slicing(proj):
+    """Helper method to reconstruct the projection matrix from a slicing operator.
+
+    Parameters:
+        proj: Slicing operator.
+
+    Returns:
+        Projection matrix.
+
+    """
+    # The idea is to construct an identity-like matrix and apply the operator to it; the
+    # resulting matrix can be interpreted as the projection matrix. The reason for the
+    # identity-like, and not just the identity, is that the operator might map only some
+    # of the rows its domain, hence we need to place the identity rows in the correct
+    # position.
+
+    if proj._domain_indices is not None:
+        # If the operator has specified a domain, we need to construct a matrix with the
+        # correct number of rows and columns, and with the identity rows in the correct
+        # position.
+        if proj._domain_indices.size == 0:
+            # The domain indices are explicitly set to empty. In this case, the operator
+            # will have zero rows.
+            num_domain_rows = 0
+        else:  # > 0
+            # We do not know the dimension of the domain of the operator, but we know a
+            # lower bound, which is the maximum index in the domain indices. Add one
+            # since the indices are zero offset.
+            num_domain_rows = proj._domain_indices.max() + 1
+        
+        # The number of columns must be the number of domain indices to create an
+        # identity-like matrix.
+        num_domain_cols = proj._domain_indices.size
+        
+        # Create a zero matrix, fill with unit elements in the correct position.
+        mat = np.zeros((num_domain_rows, num_domain_cols))
+        for i in range(num_domain_cols):
+            mat[proj._domain_indices[i], i] = 1
+
+        # Convert to sparse matrix.
+        mat = sps.csr_matrix(mat)
+    else:
+        # If the operator does not have a domain specified, we can use a simple identity
+        # matrix. In this case, the size is determined by the size of the range indices.
+        mat = sps.eye(proj._range_indices.size)
+
+    # Apply the operator to the identity-like matrix.
+    proj_mat = proj.apply(mat).toarray()
+
+    if proj._range_indices is not None:
+        # If the range indices are specified, the target size of the projection matrix
+        # is also known. Adjust the size of the matrix to match the range indices.
+        expanded_proj_mat = np.zeros((proj._range_size, proj_mat.shape[1]))
+        expanded_proj_mat[proj._range_indices] = proj_mat[proj._range_indices]
+        return expanded_proj_mat
+    else:
+        # The range is not specified, return the matrix as is.
+        return expanded_proj_mat
+
+
+
