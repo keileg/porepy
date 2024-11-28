@@ -2408,7 +2408,7 @@ class _RestrictionBySlicing(Operator):
         # New indptr for the sliced matrix.
         if self._range_indices is None:
             num_elem_per_row = num_elem_per_row_domain
-            new_num_rows = A.shape[0]
+            new_num_rows = self._domain_indices.size
         else:
             num_elem_per_row = np.zeros(self._range_size, dtype=int)
             num_elem_per_row[self._range_indices] = num_elem_per_row_domain
