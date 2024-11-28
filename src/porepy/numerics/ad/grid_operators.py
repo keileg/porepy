@@ -839,7 +839,7 @@ def _target_indices(all_grids: pp.GridLikeSequence, target_grids: pp.GridLikeSeq
     if indices is None:
         indices = []
         for g in target_grids:
-            indices.append(np.arange(getattr(g, grid_attribute)))
+            indices.append(np.arange(dim * getattr(g, grid_attribute)))
 
     # Get the number of cells or faces in each grid.
     all_indices = np.array([getattr(g, grid_attribute) for g in all_grids])
@@ -854,7 +854,7 @@ def _target_indices(all_grids: pp.GridLikeSequence, target_grids: pp.GridLikeSeq
     for g, inds in zip(target_grids, indices):
         # If a ValueError is raised here, g is likely not in all_grids.
         ind = all_grids.index(g)
-        target_indices.append(offset[ind] + dim * inds)
+        target_indices.append(offset[ind] + inds)
 
     return np.concatenate(target_indices)
 
