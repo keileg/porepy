@@ -2401,20 +2401,89 @@ class _RestrictionBySlicing(Operator):
             # Get the indices (referring to the fields A.data and A.indices) of the non-zero
             # elements in the target rows.
             sub_indices = pp.matrix_operations.mcolon(indptr[self._domain_indices], indptr[self._domain_indices+1])
+        # New indptr for the sliced matrix.
+        if self._range_indices is None:
+            # 
+            num_elem_per_row = num_elem_per_row_domain
+            new_num_rows = self._domain_indices.size
             new_data = A.data[sub_indices]
 
             new_indices = indices[sub_indices]
 
-        # New indptr for the sliced matrix.
-        if self._range_indices is None:
-            num_elem_per_row = num_elem_per_row_domain
-            new_num_rows = self._domain_indices.size
         else:
-            num_elem_per_row = np.zeros(self._range_size, dtype=int)
-            num_elem_per_row[self._range_indices] = num_elem_per_row_domain
+            # The number of rows is the given size of the range.
             new_num_rows = self._range_size
+            if self._domain_indices is None:
+                num_elem_per_row = np.zeros(self._range_size, dtype=int)
+                num_elem_per_row[self._range_indices] = num_elem_per_row_domain
+            else:
+                # We need to do combine two operations: First, the range indices are not
+                # necessarily sorted, but we need them sorted in order to use them
+                # efficiently during manipulation of the sparse storage. Second, since
+                # there is a one-to-one correspondence between the domain and range, we
+                # need to do a corresponding shuffling of the data in rows that lie in
+                # the domain of the restriction. This must be done not on the
+                # domain_indices themselves, but rather on the sub_indices, hence data
+                # and indices.
+
+                sort_ind_domain = np.argsort(self._domain_indices)
+
+                # Find the sorting indices for the range indices.
+                sort_range_ind = np.argsort(self._range_indices)
+
+
+
+
+                
+
+        if self._range_indices is None:
+            # If the range indices are not given, we assume that the range size is the
+            # same as the domain size. That is, we will simply pick out the requested
+            # rows from the matrix.
+            self._range_indices = np.arange(self._domain_indices.size)
+            # If no range indices are given, we assume that the range size is the same
+            # as the domain size.
+            self._range_size = self._domain_indices.size
+        if self._domain_indices is None:
+            # If the domain indices are not given, we assume that the domain size is the
+            # same as the range size. That is, we will fetch all rows from the matrix
+            # and redistribute them.
+            self._domain_indices = np.arange(self._range_indices.size)
+
+        # To manipulate index pointers, it is convenient to have the range indices
+        # sorted.
+        sort_ind_range = np.argsort(self._range_indices)
+
+        # Number of non-zero elements in each row in the domain.
+        num_elem_per_row_domain = indptr[self._domain_indices+1] - indptr[self._domain_indices]
+
+
+        # Number of non-zero elements in the range matrix.
+        num_elem_per_row = np.zeros(self._range_size, dtype=int)
+
+        # Assignment to the sorted range indices.
+        num_elem_per_row[self._range_indices[sort_ind_range]] = num_elem_per_row_domain
+
+        # Expand this so that each sorting index is repeated as many times as
+        # there are elements in the corresponding row in the domain.
+        expanded_sort_range_ind = pp.matrix_operations.rldecode(sort_range_ind, num_elem_per_row_domain)
+
+        # Get the indices (referring to the fields A.data and A.indices) of the non-zero
+        # elements in the target rows.
+        sub_indices = pp.matrix_operations.mcolon(indptr[self._domain_indices[sort_ind_range]],
+             indptr[self._domain_indices[sort_ind_range] + 1])
+
+        # Find the sorting indices for the sub_indices.
+#        sort_domain_ind = np.lexsort(np.atleast_2d(expanded_sort_range_ind))
+        #new_data = A.data[sub_indices[sort_domain_ind]]
+        #new_indices = indices[sub_indices[sort_domain_ind]]
+        new_data = A.data[sub_indices]
+        new_indices = A.indices[sub_indices]
 
         new_indptr = np.cumsum(np.concatenate(([0], num_elem_per_row)))
+        tmp = sps.csr_matrix((new_data, new_indices, new_indptr), shape=(new_num_rows, A.shape[1])).toarray()
+        breakpoint()
+        
         return sps.csr_matrix((new_data, new_indices, new_indptr), shape=(new_num_rows, A.shape[1]))
 
     def __repr__(self) -> str:
