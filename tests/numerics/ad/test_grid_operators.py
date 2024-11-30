@@ -394,7 +394,8 @@ def test_mortar_projections(mdg, scalar, non_matching):
         )
 
         # Compare the known and computed projection matrices.
-        assert _compare_matrices(proj_known_primary_int, proj.mortar_to_primary_int)
+        proj_primary_int = _projection_matrix_from_slicing(proj.mortar_to_primary_int())
+        assert np.allclose(proj_known_primary_int.toarray(), proj_primary_int)
         assert _compare_matrices(proj_known_primary_avg, proj.mortar_to_primary_avg)
         # The mappings from primary to mortar are found by transposing the mappings from
         # mortar to primary, and then switching averaging and integration (this is just
