@@ -515,30 +515,30 @@ class MortarProjections:
             )
             return SparseArray(block_matrix, name=name)
 
-        self.mortar_to_primary_int = bmat(
+        self._mortar_to_primary_int = bmat(
             [mortar_to_primary_int], name="MortarToPrimaryInt"
         )
-        self.mortar_to_primary_avg = bmat(
+        self._mortar_to_primary_avg = bmat(
             [mortar_to_primary_avg], name="MortarToPrimaryAvg"
         )
-        self.mortar_to_secondary_int = bmat(
+        self._mortar_to_secondary_int = bmat(
             [mortar_to_secondary_int], name="MortarToSecondaryInt"
         )
-        self.mortar_to_secondary_avg = bmat(
+        self._mortar_to_secondary_avg = bmat(
             [mortar_to_secondary_avg], name="MortarToSecondaryAvg"
         )
 
         # Vertical stacking of the projections
-        self.primary_to_mortar_int = bmat(
+        self._primary_to_mortar_int = bmat(
             [[m] for m in primary_to_mortar_int], name="PrimaryToMortarInt"
         )
-        self.primary_to_mortar_avg = bmat(
+        self._primary_to_mortar_avg = bmat(
             [[m] for m in primary_to_mortar_avg], name="PrimaryToMortarAvg"
         )
-        self.secondary_to_mortar_int = bmat(
+        self._secondary_to_mortar_int = bmat(
             [[m] for m in secondary_to_mortar_int], name="SecondaryToMortarInt"
         )
-        self.secondary_to_mortar_avg = bmat(
+        self._secondary_to_mortar_avg = bmat(
             [[m] for m in secondary_to_mortar_avg], name="SecondaryToMortarAvg"
         )
 
@@ -556,7 +556,7 @@ class MortarProjections:
                 sps.block_diag(mats), name="SignOfMortarSides"
             )
 
-    def _mortar_to_primary_int(self) -> Operator:
+    def mortar_to_primary_int(self) -> Operator:
         proj = _RestrictionBySlicing(domain_indices=self._primary_intf_inds,
                                     range_indices=self._primary_sd_inds,
                                     range_size=self._num_faces_primary_sd,
@@ -564,43 +564,43 @@ class MortarProjections:
         return proj
 
     
-    def _mortar_to_primary_avg(self) -> Operator:
+    def mortar_to_primary_avg(self) -> Operator:
         return _RestrictionBySlicing(domain_indices=self._primary_intf_inds,
                                     range_indices=self._primary_sd_inds,
                                     range_size=self._num_faces_primary_sd,
                                     name="PrimaryToMortarAvg")
 
-    def _primary_to_mortar_int(self) -> Operator:
+    def primary_to_mortar_int(self) -> Operator:
         return _RestrictionBySlicing(domain_indices=self._primary_sd_inds,
                                     range_indices=self._primary_intf_inds,
                                     range_size=self._num_cells_mortar,
                                     name="PrimaryToMortarInt")
     
-    def _primary_to_mortar_avg(self) -> Operator:
+    def primary_to_mortar_avg(self) -> Operator:
         return _RestrictionBySlicing(domain_indices=self._primary_sd_inds,
                                     range_indices=self._primary_intf_inds,
                                     range_size=self._num_cells_mortar,
                                     name="PrimaryToMortarAvg")
 
-    def _mortar_to_secondary_int(self) -> Operator:
+    def mortar_to_secondary_int(self) -> Operator:
         return _RestrictionBySlicing(domain_indices=self._secondary_intf_inds,
                                     range_indices=self._secondary_sd_inds,
                                     range_size=self._num_cells_secondary_sd,
                                     name="SecondaryToMortarInt")
 
-    def _mortar_to_secondary_avg(self) -> Operator:
+    def mortar_to_secondary_avg(self) -> Operator:
         return _RestrictionBySlicing(domain_indices=self._secondary_intf_inds,
                                     range_indices=self._secondary_sd_inds,
                                     range_size=self._num_cells_secondary_sd,
                                     name="SecondaryToMortarAvg")
 
-    def _secondary_to_mortar_int(self) -> Operator:
+    def secondary_to_mortar_int(self) -> Operator:
         return _RestrictionBySlicing(domain_indices=self._secondary_sd_inds,
                                     range_indices=self._secondary_intf_inds,
                                     range_size=self._num_cells_mortar,
                                     name="SecondaryToMortarInt")
 
-    def _secondary_to_mortar_avg(self) -> Operator:
+    def secondary_to_mortar_avg(self) -> Operator:
         return _RestrictionBySlicing(domain_indices=self._secondary_sd_inds,
                                     range_indices=self._secondary_intf_inds,
                                     range_size=self._num_cells_mortar,
