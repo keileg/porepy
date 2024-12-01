@@ -2388,54 +2388,6 @@ class _RestrictionBySlicing(Operator):
         indptr = A.indptr
         indices = A.indices
 
-        if self._domain_indices is None:
-            # The entire matrix is to be mapped.
-            sub_indices = indices
-            num_elem_per_row_domain = indptr[1:] - indptr[:-1]
-            new_data = A.data
-            new_indices = indices
-        else:
-            # Find the size of each target row  (number of non-zero elements).
-            num_elem_per_row_domain = indptr[self._domain_indices+1] - indptr[self._domain_indices]
-            
-            # Get the indices (referring to the fields A.data and A.indices) of the non-zero
-            # elements in the target rows.
-            sub_indices = pp.matrix_operations.mcolon(indptr[self._domain_indices], indptr[self._domain_indices+1])
-        # New indptr for the sliced matrix.
-        if self._range_indices is None:
-            # 
-            num_elem_per_row = num_elem_per_row_domain
-            new_num_rows = self._domain_indices.size
-            new_data = A.data[sub_indices]
-
-            new_indices = indices[sub_indices]
-
-        else:
-            # The number of rows is the given size of the range.
-            new_num_rows = self._range_size
-            if self._domain_indices is None:
-                num_elem_per_row = np.zeros(self._range_size, dtype=int)
-                num_elem_per_row[self._range_indices] = num_elem_per_row_domain
-            else:
-                # We need to do combine two operations: First, the range indices are not
-                # necessarily sorted, but we need them sorted in order to use them
-                # efficiently during manipulation of the sparse storage. Second, since
-                # there is a one-to-one correspondence between the domain and range, we
-                # need to do a corresponding shuffling of the data in rows that lie in
-                # the domain of the restriction. This must be done not on the
-                # domain_indices themselves, but rather on the sub_indices, hence data
-                # and indices.
-
-                sort_ind_domain = np.argsort(self._domain_indices)
-
-                # Find the sorting indices for the range indices.
-                sort_range_ind = np.argsort(self._range_indices)
-
-
-
-
-                
-
         if self._range_indices is None:
             # If the range indices are not given, we assume that the range size is the
             # same as the domain size. That is, we will simply pick out the requested
@@ -2462,11 +2414,12 @@ class _RestrictionBySlicing(Operator):
         num_elem_per_row = np.zeros(self._range_size, dtype=int)
 
         # Assignment to the sorted range indices.
-        num_elem_per_row[self._range_indices[sort_ind_range]] = num_elem_per_row_domain
+        num_elem_per_row[self._range_indices[sort_ind_range]] = num_elem_per_row_domain[sort_ind_range]
 
         # Expand this so that each sorting index is repeated as many times as
         # there are elements in the corresponding row in the domain.
-        expanded_sort_range_ind = pp.matrix_operations.rldecode(sort_range_ind, num_elem_per_row_domain)
+        expanded_sort_range_ind = pp.matrix_operations.rldecode(sort_ind_range,
+            num_elem_per_row_domain)
 
         # Get the indices (referring to the fields A.data and A.indices) of the non-zero
         # elements in the target rows.
@@ -2481,9 +2434,10 @@ class _RestrictionBySlicing(Operator):
         new_indices = A.indices[sub_indices]
 
         new_indptr = np.cumsum(np.concatenate(([0], num_elem_per_row)))
+
+        new_num_rows = self._range_size
+
         tmp = sps.csr_matrix((new_data, new_indices, new_indptr), shape=(new_num_rows, A.shape[1])).toarray()
-        breakpoint()
-        
         return sps.csr_matrix((new_data, new_indices, new_indptr), shape=(new_num_rows, A.shape[1]))
 
     def __repr__(self) -> str:
