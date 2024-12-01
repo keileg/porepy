@@ -394,25 +394,30 @@ def test_mortar_projections(mdg, scalar, non_matching):
         )
 
         # Compare the known and computed projection matrices.
-        proj_primary_int = _projection_matrix_from_slicing(proj.mortar_to_primary_int())
-        assert np.allclose(proj_known_primary_int.toarray(), proj_primary_int)
-        assert _compare_matrices(proj_known_primary_avg, proj.mortar_to_primary_avg)
+        proj_mortar_primary_int = _projection_matrix_from_slicing(proj.mortar_to_primary_int())
+        assert np.allclose(proj_known_primary_int.toarray(), proj_mortar_primary_int)
+
+        proj_mortar_primary_avg = _projection_matrix_from_slicing(proj.mortar_to_primary_avg())
+        assert np.allclose(proj_known_primary_avg.toarray(), proj_mortar_primary_avg)
         # The mappings from primary to mortar are found by transposing the mappings from
         # mortar to primary, and then switching averaging and integration (this is just
         # how it is).
-        assert _compare_matrices(proj_known_primary_avg.T, proj.primary_to_mortar_int)
-        assert _compare_matrices(proj_known_primary_int.T, proj.primary_to_mortar_avg)
+        # EK note to self: Indices seem to be mixed up here.
+        proj_primary_mortar_int = _projection_matrix_from_slicing(proj.primary_to_mortar_int())
+        assert np.allclose(proj_known_primary_avg.T.toarray()[:, np.hstack(row_ind_primary)], proj_primary_mortar_int)
+        proj_primary_mortar_avg = _projection_matrix_from_slicing(proj.primary_to_mortar_avg())
+        assert _compare_matrices(proj_known_primary_int.T.toarray()[:, np.hstack(row_ind_primary)], proj.proj_primary_mortar_avg)
 
         # Same for the mapping to the secondary subdomains.
-        assert _compare_matrices(proj_known_secondary_int, proj.mortar_to_secondary_int)
-        assert _compare_matrices(proj_known_secondary_avg, proj.mortar_to_secondary_avg)
+        proj_mortar_secondary_int = _projection_matrix_from_slicing(proj.mortar_to_secondary_int())
+        assert _compare_matrices(proj_known_secondary_int.toarray(), proj.mortar_to_secondary_int)
+        proj_mortar_secondary_avg = _projection_matrix_from_slicing(proj.mortar_to_secondary_avg())
+        assert _compare_matrices(proj_known_secondary_avg.toarray(), proj.mortar_to_secondary_avg)
         # See the mapping from primary to mortar above for comments.
-        assert _compare_matrices(
-            proj_known_secondary_avg.T, proj.secondary_to_mortar_int
-        )
-        assert _compare_matrices(
-            proj_known_secondary_int.T, proj.secondary_to_mortar_avg
-        )
+        proj_secondary_mortar_int = _projection_matrix_from_slicing(proj.secondary_to_mortar_int())
+        assert _compare_matrices(proj_known_secondary_avg.T.toarray()[:, np.hstack(row_ind_secondary)], proj.secondary_to_mortar_int)
+        proj_secondary_mortar_avg = _projection_matrix_from_slicing(proj.secondary_to_mortar_avg())
+        assert _compare_matrices(proj_known_secondary_int.T.toarray()[:, np.hstack(row_ind_secondary)], proj.secondary_to_mortar_avg)
 
 
 @pytest.mark.parametrize("scalar", [True, False])
