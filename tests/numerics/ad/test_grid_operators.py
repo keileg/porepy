@@ -653,8 +653,11 @@ def _projection_matrix_from_slicing(proj):
         
         # Create a zero matrix, fill with unit elements in the correct position.
         mat = np.zeros((num_domain_rows, num_domain_cols))
+        # We need to sort the indices to ensure that the identity rows are placed in the
+        # correct position.
+        sorted_indices = np.sort(proj._domain_indices)
         for i in range(num_domain_cols):
-            mat[proj._domain_indices[i], i] = 1
+            mat[sorted_indices[i], i] = 1
 
         # Convert to sparse matrix.
         mat = sps.csr_matrix(mat)
