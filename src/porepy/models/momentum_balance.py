@@ -228,7 +228,7 @@ class AngularMomentumEquation:
 
     def source_rotation(self, subdomains: list[pp.Grid]) -> pp.ad.Operator:
         num_cells = sum(sd.num_cells for sd in subdomains)
-        return pp.ad.DenseArray(np.zeros(num_cells), "zero rotation source")
+        return pp.ad.DenseArray(np.zeros(num_cells * self._rotation_dimension()), "zero rotation source")
 
 
 class SolidMassEquation:
