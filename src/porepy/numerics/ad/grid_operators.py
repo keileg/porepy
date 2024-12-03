@@ -560,7 +560,7 @@ class MortarProjections:
         proj = _RestrictionBySlicing(domain_indices=self._primary_intf_inds,
                                     range_indices=self._primary_sd_inds,
                                     range_size=self._num_faces_primary_sd,
-                                    name="PrimaryToMortarInt")
+                                    name="MortarToPrimaryInt")
         return proj
 
     
@@ -568,7 +568,7 @@ class MortarProjections:
         return _RestrictionBySlicing(domain_indices=self._primary_intf_inds,
                                     range_indices=self._primary_sd_inds,
                                     range_size=self._num_faces_primary_sd,
-                                    name="PrimaryToMortarAvg")
+                                    name="MortarToPrimaryAvg")
 
     def primary_to_mortar_int(self) -> Operator:
         return _RestrictionBySlicing(domain_indices=self._primary_sd_inds,
@@ -586,13 +586,13 @@ class MortarProjections:
         return _RestrictionBySlicing(domain_indices=self._secondary_intf_inds,
                                     range_indices=self._secondary_sd_inds,
                                     range_size=self._num_cells_secondary_sd,
-                                    name="SecondaryToMortarInt")
+                                    name="MorarToSecondaryInt")
 
     def mortar_to_secondary_avg(self) -> Operator:
         return _RestrictionBySlicing(domain_indices=self._secondary_intf_inds,
                                     range_indices=self._secondary_sd_inds,
                                     range_size=self._num_cells_secondary_sd,
-                                    name="SecondaryToMortarAvg")
+                                    name="MortarToSecondaryAvg")
 
     def secondary_to_mortar_int(self) -> Operator:
         return _RestrictionBySlicing(domain_indices=self._secondary_sd_inds,
