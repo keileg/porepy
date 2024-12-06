@@ -3139,6 +3139,7 @@ class _ThreeFieldLinearElasticMechanicalStress:
 
         return (
             discr.rotation_displacement() @ self.displacement(domains)
+            + discr.rotation_rotation() @ self.rotation(domains)
             + discr.bound_rotation_displacement() @ boundary_operator
             + discr.bound_rotation_displacement()
             @ proj.mortar_to_primary_avg
