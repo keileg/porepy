@@ -53,12 +53,6 @@ class MomentumBalance(  # type: ignore[misc]
     """Combine components needed for momentum balance simulation."""
 
 
-class CosseratMomentumBalance(  # type: ignore[misc]
-    pp.momentum_balance.CosseratMaterialMixin,
-    pp.momentum_balance.MomentumBalance,
-):
-    """Combine components needed for momentum balance simulation for Cosserat materials."""
-
 
 class MassAndEnergyBalance(  # type: ignore[misc]
     RectangularDomainThreeFractures,

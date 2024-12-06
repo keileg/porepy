@@ -820,66 +820,12 @@ class InitialConditionsMomentumBalance(pp.InitialConditionMixin):
         return np.zeros(intf.num_cells * self.nd)
 
 
-class _BoundaryConditionsCosseratMaterial:
-    """Boundary conditions for the three-field momentum balance."""
-
-    rotation_variable: str
-    volumetric_strain_variable: str
-
-    def bc_type_rotation(
-        self, sd: pp.Grid
-    ) -> pp.BoundaryCondition | pp.BoundaryConditionVectorial:
-        """Define type of boundary conditions.
-
-        Parameters:
-            sd: Subdomain grid.
-
-        Returns:
-            Boundary condition representation. Dirichlet on all global boundaries.
-
-        """
-        # Define boundary faces.
-        boundary_faces = self.domain_boundary_sides(sd).all_bf
-        if self.nd == 2:
-            bc = pp.BoundaryCondition(sd, boundary_faces, "dir")
-        else:
-            bc = pp.BoundaryConditionVectorial(sd, boundary_faces, "dir")
-
-        return bc
-
-    def bc_values_rotation(self, boundary_grid: pp.Grid) -> np.ndarray:
-        """Rotation values for the Dirichlet boundary condition.
-
-        Parameters:
-            boundary_grid: Boundary grid to evaluate values on.
-
-        Returns:
-            An array with shape (boundary_grid.num_cells,) containing the rotation values
-            on the provided boundary grid.
-
-        """
-        return np.zeros(boundary_grid.num_cells * self._rotation_dimension())
-
-    def update_all_boundary_conditions(self) -> None:
-        """Set values for the rotation on boundaries."""
-        super().update_all_boundary_conditions()
-        self.update_boundary_condition(self.rotation_variable, self.bc_values_rotation)
-
-
 class TpsaMomentumBalanceMixin(
     _VariablesThreeFieldMomentumBalance,
     AngularMomentumEquation,
     SolidMassEquation,
     constitutive_laws._ThreeFieldLinearElasticMechanicalStress,
     _SolutionStrategyThreeFieldMomentumBalance,
-):
-    pass
-
-
-class CosseratMaterialMixin(
-    constitutive_laws.CosseratMaterial,
-    _BoundaryConditionsCosseratMaterial,
-    TpsaMomentumBalanceMixin,
 ):
     pass
 
