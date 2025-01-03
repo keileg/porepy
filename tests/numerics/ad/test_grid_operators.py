@@ -235,9 +235,28 @@ def test_mortar_projections(mdg):#, scalar, non_matching):
     if non_matching:
         # If requested, we will refine the two 1d grids, such that the projection
         # matrices have non-unitary entries.
-        for g in mdg.subdomains(dim=1):
-            g_new = pp.refinement.refine_grid_1d(g, ratio=2)
-            mdg.replace_subdomains_and_interfaces({g: g_new})
+        mdg_new = mdg_func(nx=4, ny=4)
+        g_new = mdg_new.subdomains(dim=2)[0]
+        g_new.compute_geometry()
+        
+        intf_map = {}
+
+        for intf in mdg_new.interfaces(dim=1):
+            g_sec = mdg_new.interface_to_subdomain_pair(intf)[1]
+
+            for intf_coarse in mdg.interfaces(dim=1):
+                _, g_sec_coarse = mdg.interface_to_subdomain_pair(intf_coarse)
+                if g_sec_coarse.frac_num == g_sec.frac_num:
+                    intf_map.update({intf: intf_coarse})
+
+
+        mdg_new.replace_subdomains_and_interfaces(intf_map=intf_map)
+        mdg = mdg_new
+
+        # Also refine the 2d grid, to test non-trivial mappings between the mortar grid
+        # and the primary subdomains.
+        g = mdg.subdomains(dim=2)[0]
+        
 
     # Define the dimension of the field being projected.
     proj_dim = 1 if scalar else mdg.dim_max()
