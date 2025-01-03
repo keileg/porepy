@@ -12,19 +12,27 @@ Checks performed include the following:
     test_ad_discretization_class: test for AD discretizations.
 
 """
-
+from typing import Optional
 import numpy as np
 import pytest
 import scipy.sparse as sps
 import porepy as pp
 
 
+from numba import config
+config.DISABLE_JIT = True
+
+def fracs():
+    return [np.array([[0, 2], [1, 1]]), np.array([[1, 1], [0, 2]])]
+
+def mdg_func(nx=2, ny=2):
+    """Provide a mixed-dimensional grid for the tests."""
+    md_grid = pp.meshing.cart_grid(fracs(), np.array([nx, ny]), physdims=[2, 2])
+    return md_grid
+
 @pytest.fixture
 def mdg():
-    """Provide a mixed-dimensional grid for the tests."""
-    fracs = [np.array([[0, 2], [1, 1]]), np.array([[1, 1], [0, 2]])]
-    md_grid = pp.meshing.cart_grid(fracs, np.array([2, 2]))
-    return md_grid
+    return mdg_func(nx=2, ny=2)
 
 
 @pytest.mark.parametrize("scalar", [True, False])
@@ -215,9 +223,9 @@ def test_mortar_projections_empty_list(mdg):
     assert proj_no_subdomains_interfaces.secondary_to_mortar_int().shape == (0, 0)
 
 
-#@pytest.mark.parametrize("scalar", [True, False])
-#@pytest.mark.parametrize("non_matching", [True, False])
-def test_mortar_projections(mdg):#, scalar, non_matching):
+@pytest.mark.parametrize("scalar", [True, False])
+@pytest.mark.parametrize("non_matching", [True, False])
+def test_mortar_projections(mdg, scalar, non_matching):
     """Test of mortar projections between mortar grids and standard subdomain grids.
 
     Parameters:
@@ -230,8 +238,6 @@ def test_mortar_projections(mdg):#, scalar, non_matching):
             entries.
 
     """
-    non_matching = False
-    scalar = True
     if non_matching:
         # If requested, we will refine the two 1d grids, such that the projection
         # matrices have non-unitary entries.
@@ -371,6 +377,7 @@ def test_mortar_projections(mdg):#, scalar, non_matching):
             # the interfaces), the projection matrix is zero, with the given shape.
             proj_known_primary_int = sps.csr_matrix(shape_primary)
             proj_known_primary_avg = sps.csr_matrix(shape_primary)
+            row_ind_primary = [np.array([], dtype=int)]
         else:
             # Construct the projection matrices from the collected indices and data.
             # Separate projections for integration and averaging.
@@ -423,7 +430,10 @@ def test_mortar_projections(mdg):#, scalar, non_matching):
         # mortar to primary, and then switching averaging and integration (this is just
         # how it is).
         # EK note to self: Indices seem to be mixed up here.
-        row_ind_primary_sorted = np.sort(np.hstack(row_ind_primary))
+        if proj._is_conforming:
+            row_ind_primary_sorted = np.sort(np.hstack(row_ind_primary))
+        else:
+            row_ind_primary_sorted = np.arange(shape_primary[0])
 
         proj_primary_mortar_int = _projection_matrix_from_slicing(proj.primary_to_mortar_int())
         assert np.allclose(proj_known_primary_avg.T.toarray()[:, row_ind_primary_sorted], proj_primary_mortar_int)
@@ -662,6 +672,8 @@ def _projection_matrix_from_slicing(proj, min_num_cols: Optional[int] = None):
     # identity-like, and not just the identity, is that the operator might map only some
     # of the rows its domain, hence we need to place the identity rows in the correct
     # position.
+    if isinstance(proj, pp.ad.SparseArray):
+        return proj._mat.toarray()
 
     if proj._domain_indices is not None:
         # If the operator has specified a domain, we need to construct a matrix with the
@@ -721,3 +733,4 @@ def _projection_matrix_from_slicing(proj, min_num_cols: Optional[int] = None):
 
 
 
+#test_mortar_projections()
