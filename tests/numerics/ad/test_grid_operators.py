@@ -404,10 +404,13 @@ def test_mortar_projections(mdg):#, scalar, non_matching):
         # mortar to primary, and then switching averaging and integration (this is just
         # how it is).
         # EK note to self: Indices seem to be mixed up here.
+        row_ind_primary_sorted = np.sort(np.hstack(row_ind_primary))
+        row_ind_secondary_sorted = np.sort(np.hstack(row_ind_secondary))
+
         proj_primary_mortar_int = _projection_matrix_from_slicing(proj.primary_to_mortar_int())
-        assert np.allclose(proj_known_primary_avg.T.toarray()[:, np.hstack(row_ind_primary)], proj_primary_mortar_int)
+        assert np.allclose(proj_known_primary_avg.T.toarray()[:, row_ind_primary_sorted], proj_primary_mortar_int)
         proj_primary_mortar_avg = _projection_matrix_from_slicing(proj.primary_to_mortar_avg())
-        assert _compare_matrices(proj_known_primary_int.T.toarray()[:, np.hstack(row_ind_primary)], proj.proj_primary_mortar_avg)
+        assert np.allclose(proj_known_primary_int.T.toarray()[:, row_ind_primary_sorted], proj_primary_mortar_avg)
 
         # Same for the mapping to the secondary subdomains.
         proj_mortar_secondary_int = _projection_matrix_from_slicing(proj.mortar_to_secondary_int())
