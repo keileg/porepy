@@ -187,10 +187,10 @@ def test_mortar_projections_empty_list(mdg):
     )
     # From mortar to subdomains.
     assert proj_no_subdomains.mortar_to_primary_int()._range_size == 0
-    assert proj_no_subdomains.mortar_to_secondary_int()._range_size == 0
+    assert proj_no_subdomains.mortar_to_secondary_int().shape == (0, n_mortar_cells)
     # From subdomains to mortar.
     assert proj_no_subdomains.primary_to_mortar_int()._range_size == n_mortar_cells
-    assert proj_no_subdomains.secondary_to_mortar_int()._range_size == n_mortar_cells
+    assert proj_no_subdomains.secondary_to_mortar_int().shape == (n_mortar_cells, 0)
 
     # Projection operator with empty list of interfaces.
     proj_no_interfaces = pp.ad.MortarProjections(
@@ -198,10 +198,10 @@ def test_mortar_projections_empty_list(mdg):
     )
     # From mortar to subdomains.
     assert proj_no_interfaces.mortar_to_primary_int()._range_size == n_faces
-    assert proj_no_interfaces.mortar_to_secondary_int()._range_size == n_cells
+    assert proj_no_interfaces.mortar_to_secondary_int().shape == (n_cells, 0)
     # From subdomains to mortar.
     assert proj_no_interfaces.primary_to_mortar_int()._range_size == 0
-    assert proj_no_interfaces.secondary_to_mortar_int()._range_size == 0
+    assert proj_no_interfaces.secondary_to_mortar_int().shape == (0, n_cells)
 
     # Empty list of subdomains and interfaces.
     proj_no_subdomains_interfaces = pp.ad.MortarProjections(
@@ -209,10 +209,10 @@ def test_mortar_projections_empty_list(mdg):
     )
     # From mortar to subdomains.
     assert proj_no_subdomains_interfaces.mortar_to_primary_int()._range_size == 0
-    assert proj_no_subdomains_interfaces.mortar_to_secondary_int()._range_size == 0
+    assert proj_no_subdomains_interfaces.mortar_to_secondary_int().shape == (0, 0)
     # From subdomains to mortar.
     assert proj_no_subdomains_interfaces.primary_to_mortar_int()._range_size == 0
-    assert proj_no_subdomains_interfaces.secondary_to_mortar_int()._range_size == 0
+    assert proj_no_subdomains_interfaces.secondary_to_mortar_int().shape == (0, 0)
 
 
 #@pytest.mark.parametrize("scalar", [True, False])
