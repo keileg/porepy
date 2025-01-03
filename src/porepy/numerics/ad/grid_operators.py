@@ -271,51 +271,23 @@ class MortarProjections:
         self.dim: int = dim
         self._subdomains = subdomains
         self._interfaces = interfaces
+        self._mdg = mdg
 
-
-        primary_pairs, secondary_pairs = [], []
+        is_conforming = True
         for intf in interfaces:
-            sd_primary, sd_secondary = mdg.interface_to_subdomain_pair(intf)
-            if sd_primary in subdomains:
-                primary_pairs.append((sd_primary, intf))
-            if sd_secondary in subdomains:
-                secondary_pairs.append((sd_secondary, intf))
+            mortar_to_primary = intf.mortar_to_primary_int()
+            primary_to_mortar = intf.primary_to_mortar_int()
+            if not np.allclose(mortar_to_primary.data, 1, atol=1e-10):
+                is_conforming = False
+            if not np.allclose(primary_to_mortar.data, 1, atol=1e-10):
+                is_conforming = False
 
-        self._num_faces_primary_sd = self.dim * sum([sd.num_faces for sd in subdomains])
-        self._num_cells_secondary_sd = self.dim * sum([sd.num_cells for sd in subdomains])
-        self._num_cells_mortar = self.dim * sum([intf.num_cells for intf in interfaces])
+        self._is_conforming = is_conforming
 
-        offset_face_subdomains = np.cumsum([0] + [sd.num_faces for sd in subdomains])
-        offset_cell_subdomains = np.cumsum([0] + [sd.num_cells for sd in subdomains])
-        offset_cell_mortar = np.cumsum([0] + [intf.num_cells for intf in interfaces])
+        if self._is_conforming:
+            self._set_conforming_projections()
 
-        primary_sd_inds, primary_intf_inds = [], []
-        secondary_sd_inds, secondary_intf_inds = [], []
-        for sd, intf in primary_pairs:
-            sd_faces, mg_cells, weights = sps.find(intf.mortar_to_primary_int(dim))
-            primary_sd_inds.append(_target_indices(subdomains, [sd], dim, 'num_faces', [sd_faces]))
-            primary_intf_inds.append(_target_indices(interfaces, [intf], dim, 'num_cells', [mg_cells]))
-        for sd, intf in secondary_pairs:
-            sd_cells, mg_cells, weights = sps.find(intf.mortar_to_secondary_int(dim))
-            secondary_sd_inds.append(_target_indices(subdomains, [sd], dim, 'num_cells', [sd_cells]))
-            secondary_intf_inds.append(_target_indices(interfaces, [intf], dim, 'num_cells', [mg_cells]))
-
-        if len(primary_sd_inds) > 0:
-            self._primary_sd_inds = np.hstack(primary_sd_inds)
-        else:
-            self._primary_sd_inds = np.array([], dtype=int)
-        if len(primary_intf_inds) > 0:
-            self._primary_intf_inds = np.hstack(primary_intf_inds)
-        else:
-            self._primary_intf_inds = np.array([], dtype=int)
-        if len(secondary_sd_inds) > 0:
-            self._secondary_sd_inds = np.hstack(secondary_sd_inds)
-        else:
-            self._secondary_sd_inds = np.array([], dtype=int)
-        if len(secondary_intf_inds) > 0:
-            self._secondary_intf_inds = np.hstack(secondary_intf_inds)
-        else:
-            self._secondary_intf_inds = np.array([], dtype=int)
+        return
 
         # Initialize projections
         cell_projection, face_projection = _subgrid_projections(subdomains, self.dim)
@@ -541,77 +513,223 @@ class MortarProjections:
         self._secondary_to_mortar_avg = bmat(
             [[m] for m in secondary_to_mortar_avg], name="SecondaryToMortarAvg"
         )
-
-        # Also generate a merged version of MortarGrid.sign_of_mortar_sides:
+        
+    def sign_of_mortar_sides(self) -> SparseArray:
+        if len(interfaces) == 0:
+            return SparseArray(
+                sps.bmat([[None]]), name="SignOfMortarSides"
+            )
         mats = []
         for intf in interfaces:
             assert isinstance(intf, pp.MortarGrid)  # Appease mypy
             mats.append(intf.sign_of_mortar_sides(dim))
-        if len(interfaces) == 0:
-            self.sign_of_mortar_sides = SparseArray(
-                sps.bmat([[None]]), name="SignOfMortarSides"
-            )
         else:
-            self.sign_of_mortar_sides = SparseArray(
+            return SparseArray(
                 sps.block_diag(mats), name="SignOfMortarSides"
             )
 
     def mortar_to_primary_int(self) -> Operator:
-        proj = _RestrictionBySlicing(domain_indices=self._primary_intf_inds,
-                                    range_indices=self._primary_sd_inds,
-                                    range_size=self._num_faces_primary_sd,
-                                    name="MortarToPrimaryInt")
-        return proj
+        if self._is_conforming:
+            proj = _RestrictionBySlicing(domain_indices=self._primary_intf_inds,
+                                        range_indices=self._primary_sd_inds,
+                                        range_size=self._num_faces_primary_sd,
+                                        name="MortarToPrimaryInt")
+            return proj
+        else:
+            _, face_projections = _subgrid_projections(self._subdomains, self.dim)
+            for intf in self._interfaces:
+                sd_primary, _ = self._mdg.interface_to_subdomain_pair(intf)
+                if sd_primary in self._subdomains:
+                    proj_mats.append(pp.matrix_operations.optimized_compressed_storage(
+                                face_projections[sd_primary]
+                                * intf.mortar_to_primary_int(self.dim)
+                            )
+                    )
+                else:
+                    # TODO: Optimized storage
+                    size = self.dim * sum([sd.num_faces for sd in self._subdomains])
+                    proj_mats.append(sps.csr_matrix((size, intf.num_cells * self.dim)))
+            return self._bmat(proj_mats, name="MortarToPrimaryInt")
 
     
     def mortar_to_primary_avg(self) -> Operator:
-        return _RestrictionBySlicing(domain_indices=self._primary_intf_inds,
-                                    range_indices=self._primary_sd_inds,
-                                    range_size=self._num_faces_primary_sd,
-                                    name="MortarToPrimaryAvg")
+        if self._is_conforming:
+            proj = _RestrictionBySlicing(domain_indices=self._primary_intf_inds,
+                                        range_indices=self._primary_sd_inds,
+                                        range_size=self._num_faces_primary_sd,
+                                        name="MortarToPrimaryAvg")
+            return proj
+        else:
+            _, face_projections = _subgrid_projections(self._subdomains, self.dim)
+            for intf in self._interfaces:
+                sd_primary, _ = self._mdg.interface_to_subdomain_pair(intf)
+                if sd_primary in self._subdomains:
+                    proj_mats.append(pp.matrix_operations.optimized_compressed_storage(
+                                face_projections[sd_primary]
+                                * intf.mortar_to_primary_avg(self.dim)
+                            )
+                    )
+                else:
+                    size = self.dim * sum([sd.num_faces for sd in self._subdomains])
+                    proj_mats.append(sps.csr_matrix((size, intf.num_cells * self.dim)))
+            return self._bmat(proj_mats, name="MortarToPrimaryAvg")
 
     def primary_to_mortar_int(self) -> Operator:
-        return _RestrictionBySlicing(domain_indices=self._primary_sd_inds,
-                                    range_indices=self._primary_intf_inds,
-                                    range_size=self._num_cells_mortar,
-                                    name="PrimaryToMortarInt")
+        if self._is_conforming:
+            proj = _RestrictionBySlicing(domain_indices=self._primary_sd_inds,
+                                        range_indices=self._primary_intf_inds,
+                                        range_size=self._num_cells_mortar,
+                                        name="PrimaryToMortarInt")
+            return proj
+        else:
+            _, face_projections = _subgrid_projections(self._subdomains, self.dim)
+            for intf in self._interfaces:
+                _, sd_primary = self._mdg.interface_to_subdomain_pair(intf)
+                if sd_primary in self._subdomains:
+                    proj_mats.append(pp.matrix_operations.optimized_compressed_storage(
+                                intf.primary_to_mortar_int(self.dim)
+                                * face_projections[sd_primary].T
+                            )
+                    )
+                else:
+                    size = self.dim * sum([sd.num_faces for sd in self._subdomains])
+                    proj_mats.append(sps.csr_matrix((intf.num_cells * self.dim, size)))
+            return self._bmat(proj_mats, name="PrimaryToMortarInt")
     
     def primary_to_mortar_avg(self) -> Operator:
-        return _RestrictionBySlicing(domain_indices=self._primary_sd_inds,
-                                    range_indices=self._primary_intf_inds,
-                                    range_size=self._num_cells_mortar,
-                                    name="PrimaryToMortarAvg")
+        if self._is_conforming:
+            proj = _RestrictionBySlicing(domain_indices=self._primary_sd_inds,
+                                        range_indices=self._primary_intf_inds,
+                                        range_size=self._num_cells_mortar,
+                                        name="PrimaryToMortarAvg")
+            return proj
+        else:
+            _, face_projections = _subgrid_projections(self._subdomains, self.dim)
+            for intf in self._interfaces:
+                _, sd_primary = self._mdg.interface_to_subdomain_pair(intf)
+                if sd_primary in self._subdomains:
+                    proj_mats.append(pp.matrix_operations.optimized_compressed_storage(
+                                intf.primary_to_mortar_avg(self.dim)
+                                * face_projections[sd_primary].T
+                            )
+                    )
+                else:
+                    size = self.dim * sum([sd.num_faces for sd in self._subdomains])
+                    proj_mats.append(sps.csr_matrix((intf.num_cells * self.dim, size)))
+            return self._bmat(proj_mats, name="PrimaryToMortarAvg")
 
     def mortar_to_secondary_int(self) -> Operator:
-        return _RestrictionBySlicing(domain_indices=self._secondary_intf_inds,
-                                    range_indices=self._secondary_sd_inds,
-                                    range_size=self._num_cells_secondary_sd,
-                                    name="MorarToSecondaryInt")
+        proj_mats = []
+        cell_projection, _ = _subgrid_projections(self._subdomains, self.dim)
+
+        for intf in self._interfaces:
+            _, sd_secondary = self._mdg.interface_to_subdomain_pair(intf)
+            if sd_secondary in self._subdomains:
+                proj_mats.append(pp.matrix_operations.optimized_compressed_storage(
+                            cell_projection[sd_secondary]
+                            * intf.mortar_to_secondary_int(self.dim)
+                        )
+                )
+            else:
+                size = self.dim * sum([sd.num_cells for sd in self._subdomains])
+                proj_mats.append(sps.csr_matrix((size, intf.num_cells * self.dim)))
+        return self._bmat([proj_mats], name="MortarToSecondaryInt")
 
     def mortar_to_secondary_avg(self) -> Operator:
-        return _RestrictionBySlicing(domain_indices=self._secondary_intf_inds,
-                                    range_indices=self._secondary_sd_inds,
-                                    range_size=self._num_cells_secondary_sd,
-                                    name="MortarToSecondaryAvg")
+        proj_mats = []
+        cell_projection, _ = _subgrid_projections(self._subdomains, self.dim)
+
+        for intf in self._interfaces:
+            _, sd_secondary = self._mdg.interface_to_subdomain_pair(intf)
+            if sd_secondary in self._subdomains:
+                proj_mats.append(pp.matrix_operations.optimized_compressed_storage(
+                            cell_projection[sd_secondary]
+                            * intf.mortar_to_secondary_avg(self.dim)
+                        )
+                )
+            else:
+                size = self.dim * sum([sd.num_cells for sd in self._subdomains])
+                proj_mats.append(sps.csr_matrix((size, intf.num_cells * self.dim)))
+
+        return self._bmat([proj_mats], name="MortarToSecondaryAvg")
 
     def secondary_to_mortar_int(self) -> Operator:
-        return _RestrictionBySlicing(domain_indices=self._secondary_sd_inds,
-                                    range_indices=self._secondary_intf_inds,
-                                    range_size=self._num_cells_mortar,
-                                    name="SecondaryToMortarInt")
+        proj_mats = []
+        cell_projection, _ = _subgrid_projections(self._subdomains, self.dim)
+
+        for intf in self._interfaces:
+            _, sd_secondary = self._mdg.interface_to_subdomain_pair(intf)
+            if sd_secondary in self._subdomains:
+                proj_mats.append(pp.matrix_operations.optimized_compressed_storage(
+                            intf.secondary_to_mortar_int(self.dim)
+                            *cell_projection[sd_secondary].T
+                        )
+                )
+            else:
+                size = self.dim * sum([sd.num_cells for sd in self._subdomains])
+                proj_mats.append(sps.csr_matrix((intf.num_cells * self.dim, size)))
+        return self._bmat([[m] for m in proj_mats], name="SecondaryToMortarInt")
 
     def secondary_to_mortar_avg(self) -> Operator:
-        return _RestrictionBySlicing(domain_indices=self._secondary_sd_inds,
-                                    range_indices=self._secondary_intf_inds,
-                                    range_size=self._num_cells_mortar,
-                                    name="SecondaryToMortarAvg")
+        proj_mats = []
+        cell_projection, _ = _subgrid_projections(self._subdomains, self.dim)
+
+        for intf in self._interfaces:
+            _, sd_secondary = self._mdg.interface_to_subdomain_pair(intf)
+            if sd_secondary in self._subdomains:
+                proj_mats.append(pp.matrix_operations.optimized_compressed_storage(
+                            intf.secondary_to_mortar_avg(self.dim)
+                            *cell_projection[sd_secondary].T
+                        )
+                )
+            else:
+                size = self.dim * sum([sd.num_cells for sd in self._subdomains])
+                proj_mats.append(sps.csr_matrix((intf.num_cells * self.dim, size)))
+
+        return self._bmat([[m] for m in proj_mats], name="SecondaryToMortarAvg")
+
+    def _set_conforming_projections(self) -> None:
+        primary_pairs, secondary_pairs = [], []
+        for intf in self._interfaces:
+            sd_primary, sd_secondary = self._mdg.interface_to_subdomain_pair(intf)
+            if sd_primary in self._subdomains:
+                primary_pairs.append((sd_primary, intf))
+
+        self._num_faces_primary_sd = self.dim * sum([sd.num_faces for sd in self._subdomains])
+        self._num_cells_mortar = self.dim * sum([intf.num_cells for intf in self._interfaces])
+
+        offset_face_subdomains = np.cumsum([0] + [sd.num_faces for sd in self._subdomains])
+        offset_cell_mortar = np.cumsum([0] + [intf.num_cells for intf in self._interfaces])
+
+        primary_sd_inds, primary_intf_inds = [], []
+        secondary_sd_inds, secondary_intf_inds = [], []
+        for sd, intf in primary_pairs:
+            sd_faces, mg_cells, weights = sps.find(intf.mortar_to_primary_int(self.dim))
+            primary_sd_inds.append(_target_indices(self._subdomains, [sd], self.dim, 'num_faces', [sd_faces]))
+            primary_intf_inds.append(_target_indices(self._interfaces, [intf], self.dim, 'num_cells', [mg_cells]))
+
+        if len(primary_sd_inds) > 0:
+            self._primary_sd_inds = np.hstack(primary_sd_inds)
+        else:
+            self._primary_sd_inds = np.array([], dtype=int)
+        if len(primary_intf_inds) > 0:
+            self._primary_intf_inds = np.hstack(primary_intf_inds)
+        else:
+            self._primary_intf_inds = np.array([], dtype=int)        
+
+    def _bmat(self, matrices, name):
+        # Create block matrix, convert it to optimized storage format.
+        block_matrix = pp.matrix_operations.optimized_compressed_storage(
+            sps.bmat(matrices)
+        )
+        return SparseArray(block_matrix, name=name)                                    
 
     def __repr__(self) -> str:
         s = (
             f"Mortar projection for {self._num_edges} interfaces\n"
             f"Aimed at variables with dimension {self.dim}\n"
-            f"Projections to primary have dimensions {self.mortar_to_primary_avg.shape}\n"
-            f"Projections to secondary have dimensions {self.mortar_to_secondary_avg.shape}\n"
+            #f"Projections to primary have dimensions {self.mortar_to_primary_avg.shape}\n"
+            #f"Projections to secondary have dimensions {self.mortar_to_secondary_avg.shape}\n"
         )
         return s
 
