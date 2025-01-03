@@ -537,6 +537,7 @@ class MortarProjections:
             return proj
         else:
             _, face_projections = _subgrid_projections(self._subdomains, self.dim)
+            proj_mats = []
             for intf in self._interfaces:
                 sd_primary, _ = self._mdg.interface_to_subdomain_pair(intf)
                 if sd_primary in self._subdomains:
@@ -549,7 +550,7 @@ class MortarProjections:
                     # TODO: Optimized storage
                     size = self.dim * sum([sd.num_faces for sd in self._subdomains])
                     proj_mats.append(sps.csr_matrix((size, intf.num_cells * self.dim)))
-            return self._bmat(proj_mats, name="MortarToPrimaryInt")
+            return self._bmat([proj_mats], name="MortarToPrimaryInt")
 
     
     def mortar_to_primary_avg(self) -> Operator:
@@ -560,6 +561,7 @@ class MortarProjections:
                                         name="MortarToPrimaryAvg")
             return proj
         else:
+            proj_mats = []
             _, face_projections = _subgrid_projections(self._subdomains, self.dim)
             for intf in self._interfaces:
                 sd_primary, _ = self._mdg.interface_to_subdomain_pair(intf)
@@ -572,7 +574,7 @@ class MortarProjections:
                 else:
                     size = self.dim * sum([sd.num_faces for sd in self._subdomains])
                     proj_mats.append(sps.csr_matrix((size, intf.num_cells * self.dim)))
-            return self._bmat(proj_mats, name="MortarToPrimaryAvg")
+            return self._bmat([proj_mats], name="MortarToPrimaryAvg")
 
     def primary_to_mortar_int(self) -> Operator:
         if self._is_conforming:
@@ -582,9 +584,10 @@ class MortarProjections:
                                         name="PrimaryToMortarInt")
             return proj
         else:
+            proj_mats = []
             _, face_projections = _subgrid_projections(self._subdomains, self.dim)
             for intf in self._interfaces:
-                _, sd_primary = self._mdg.interface_to_subdomain_pair(intf)
+                sd_primary, _ = self._mdg.interface_to_subdomain_pair(intf)
                 if sd_primary in self._subdomains:
                     proj_mats.append(pp.matrix_operations.optimized_compressed_storage(
                                 intf.primary_to_mortar_int(self.dim)
@@ -594,7 +597,7 @@ class MortarProjections:
                 else:
                     size = self.dim * sum([sd.num_faces for sd in self._subdomains])
                     proj_mats.append(sps.csr_matrix((intf.num_cells * self.dim, size)))
-            return self._bmat(proj_mats, name="PrimaryToMortarInt")
+            return self._bmat([[m] for m in proj_mats], name="PrimaryToMortarInt")
     
     def primary_to_mortar_avg(self) -> Operator:
         if self._is_conforming:
@@ -604,9 +607,10 @@ class MortarProjections:
                                         name="PrimaryToMortarAvg")
             return proj
         else:
+            proj_mats = []
             _, face_projections = _subgrid_projections(self._subdomains, self.dim)
             for intf in self._interfaces:
-                _, sd_primary = self._mdg.interface_to_subdomain_pair(intf)
+                sd_primary, _ = self._mdg.interface_to_subdomain_pair(intf)
                 if sd_primary in self._subdomains:
                     proj_mats.append(pp.matrix_operations.optimized_compressed_storage(
                                 intf.primary_to_mortar_avg(self.dim)
@@ -616,7 +620,7 @@ class MortarProjections:
                 else:
                     size = self.dim * sum([sd.num_faces for sd in self._subdomains])
                     proj_mats.append(sps.csr_matrix((intf.num_cells * self.dim, size)))
-            return self._bmat(proj_mats, name="PrimaryToMortarAvg")
+            return self._bmat([[m] for m in proj_mats], name="PrimaryToMortarAvg")
 
     def mortar_to_secondary_int(self) -> Operator:
         proj_mats = []
@@ -633,6 +637,10 @@ class MortarProjections:
             else:
                 size = self.dim * sum([sd.num_cells for sd in self._subdomains])
                 proj_mats.append(sps.csr_matrix((size, intf.num_cells * self.dim)))
+
+        if len(proj_mats) == 0:
+            proj_mats.append(sps.csc_matrix((self.dim * sum([sd.num_cells for sd in self._subdomains]), 0)))
+
         return self._bmat([proj_mats], name="MortarToSecondaryInt")
 
     def mortar_to_secondary_avg(self) -> Operator:
@@ -651,6 +659,9 @@ class MortarProjections:
                 size = self.dim * sum([sd.num_cells for sd in self._subdomains])
                 proj_mats.append(sps.csr_matrix((size, intf.num_cells * self.dim)))
 
+        if len(proj_mats) == 0:
+            proj_mats.append(sps.csc_matrix((self.dim * sum([sd.num_cells for sd in self._subdomains]), 0)))
+
         return self._bmat([proj_mats], name="MortarToSecondaryAvg")
 
     def secondary_to_mortar_int(self) -> Operator:
@@ -668,6 +679,10 @@ class MortarProjections:
             else:
                 size = self.dim * sum([sd.num_cells for sd in self._subdomains])
                 proj_mats.append(sps.csr_matrix((intf.num_cells * self.dim, size)))
+
+        if len(proj_mats) == 0:
+            proj_mats.append(sps.csr_matrix((0, self.dim * sum([sd.num_cells for sd in self._subdomains]))))
+
         return self._bmat([[m] for m in proj_mats], name="SecondaryToMortarInt")
 
     def secondary_to_mortar_avg(self) -> Operator:
@@ -685,6 +700,8 @@ class MortarProjections:
             else:
                 size = self.dim * sum([sd.num_cells for sd in self._subdomains])
                 proj_mats.append(sps.csr_matrix((intf.num_cells * self.dim, size)))
+        if len(proj_mats) == 0:
+            proj_mats.append(sps.csr_matrix((0, self.dim * sum([sd.num_cells for sd in self._subdomains]))))
 
         return self._bmat([[m] for m in proj_mats], name="SecondaryToMortarAvg")
 
@@ -719,9 +736,12 @@ class MortarProjections:
 
     def _bmat(self, matrices, name):
         # Create block matrix, convert it to optimized storage format.
-        block_matrix = pp.matrix_operations.optimized_compressed_storage(
-            sps.bmat(matrices)
-        )
+        if len(matrices[0]) == 0:
+            block_matrix = sps.csr_matrix((0, 0))
+        else:
+            block_matrix = pp.matrix_operations.optimized_compressed_storage(
+                sps.bmat(matrices)
+            )
         return SparseArray(block_matrix, name=name)                                    
 
     def __repr__(self) -> str:
