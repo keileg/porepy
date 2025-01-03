@@ -395,17 +395,16 @@ def test_mortar_projections(mdg):#, scalar, non_matching):
         )
 
         # Compare the known and computed projection matrices.
-        proj_mortar_primary_int = _projection_matrix_from_slicing(proj.mortar_to_primary_int())
+        proj_mortar_primary_int = _projection_matrix_from_slicing(proj.mortar_to_primary_int(), min_num_cols=shape_primary[1])
         assert np.allclose(proj_known_primary_int.toarray(), proj_mortar_primary_int)
 
-        proj_mortar_primary_avg = _projection_matrix_from_slicing(proj.mortar_to_primary_avg())
+        proj_mortar_primary_avg = _projection_matrix_from_slicing(proj.mortar_to_primary_avg(), min_num_cols=shape_primary[1])
         assert np.allclose(proj_known_primary_avg.toarray(), proj_mortar_primary_avg)
         # The mappings from primary to mortar are found by transposing the mappings from
         # mortar to primary, and then switching averaging and integration (this is just
         # how it is).
         # EK note to self: Indices seem to be mixed up here.
         row_ind_primary_sorted = np.sort(np.hstack(row_ind_primary))
-        row_ind_secondary_sorted = np.sort(np.hstack(row_ind_secondary))
 
         proj_primary_mortar_int = _projection_matrix_from_slicing(proj.primary_to_mortar_int())
         assert np.allclose(proj_known_primary_avg.T.toarray()[:, row_ind_primary_sorted], proj_primary_mortar_int)
@@ -413,15 +412,18 @@ def test_mortar_projections(mdg):#, scalar, non_matching):
         assert np.allclose(proj_known_primary_int.T.toarray()[:, row_ind_primary_sorted], proj_primary_mortar_avg)
 
         # Same for the mapping to the secondary subdomains.
-        proj_mortar_secondary_int = _projection_matrix_from_slicing(proj.mortar_to_secondary_int())
-        assert _compare_matrices(proj_known_secondary_int.toarray(), proj.mortar_to_secondary_int)
-        proj_mortar_secondary_avg = _projection_matrix_from_slicing(proj.mortar_to_secondary_avg())
-        assert _compare_matrices(proj_known_secondary_avg.toarray(), proj.mortar_to_secondary_avg)
+
+        proj_mortar_secondary_int = proj.mortar_to_secondary_int()
+        assert _compare_matrices(proj_known_secondary_int, proj_mortar_secondary_int)
+        
+        proj_mortar_secondary_avg = proj.mortar_to_secondary_avg()
+        assert _compare_matrices(proj_known_secondary_avg, proj_mortar_secondary_avg)
+        
         # See the mapping from primary to mortar above for comments.
-        proj_secondary_mortar_int = _projection_matrix_from_slicing(proj.secondary_to_mortar_int())
-        assert _compare_matrices(proj_known_secondary_avg.T.toarray()[:, np.hstack(row_ind_secondary)], proj.secondary_to_mortar_int)
-        proj_secondary_mortar_avg = _projection_matrix_from_slicing(proj.secondary_to_mortar_avg())
-        assert _compare_matrices(proj_known_secondary_int.T.toarray()[:, np.hstack(row_ind_secondary)], proj.secondary_to_mortar_avg)
+        proj_secondary_mortar_int = proj.secondary_to_mortar_int()
+        assert _compare_matrices(proj_known_secondary_avg.T, proj_secondary_mortar_int)
+        proj_secondary_mortar_avg = proj.secondary_to_mortar_avg()
+        assert _compare_matrices(proj_known_secondary_int.T, proj_secondary_mortar_avg)
 
 
 @pytest.mark.parametrize("scalar", [True, False])
@@ -626,7 +628,7 @@ def geometry_information(
     n_mortar_cells = sum([intf.num_cells for intf in mdg.interfaces()]) * dim
     return n_cells, n_faces, n_mortar_cells
 
-def _projection_matrix_from_slicing(proj):
+def _projection_matrix_from_slicing(proj, min_num_cols: Optional[int] = None):
     """Helper method to reconstruct the projection matrix from a slicing operator.
 
     Parameters:
@@ -666,7 +668,8 @@ def _projection_matrix_from_slicing(proj):
         # correct position.
         sorted_indices = np.sort(proj._domain_indices)
         for i in range(num_domain_cols):
-            mat[proj._domain_indices[i], i] = 1
+            #mat[proj._domain_indices[i], i] = 1
+            mat[sorted_indices[i], i] = 1
 
         # Convert to sparse matrix.
         mat = sps.csr_matrix(mat)
@@ -677,6 +680,15 @@ def _projection_matrix_from_slicing(proj):
 
     # Apply the operator to the identity-like matrix.
     proj_mat = proj.apply(mat).toarray()
+
+    if min_num_cols is not None:
+        # If the minimum number of columns is specified, we need to adjust the size of the
+        # matrix to match this number. This is needed in cases where the operator is
+        # expected to have a certain number of columns, but the operator has fewer
+        # columns than expected.
+        if proj_mat.shape[1] < min_num_cols:
+            # The matrix is too small, add zero columns.
+            proj_mat = np.hstack((proj_mat, np.zeros((proj_mat.shape[0], min_num_cols - proj_mat.shape[1]))))
 
     if proj._range_indices is not None:
         # If the range indices are specified, the target size of the projection matrix
