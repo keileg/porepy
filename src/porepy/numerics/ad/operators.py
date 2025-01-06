@@ -2327,6 +2327,8 @@ class _RestrictionBySlicing(Operator):
         # The restriction operator is a leaf in the operator tree, and has no children.
         self.children = []
 
+        self.operation = Operator.Operations.evaluate
+
     def apply(self, x: np.ndarray | sps.spmatrix | pp.ad.AdArray) -> np.ndarray | sps.spmatrix | pp.ad.AdArray:
         """The slicing operator is implemented as a matrix multiplication.
 
