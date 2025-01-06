@@ -2308,12 +2308,16 @@ class _RestrictionBySlicing(Operator):
         name: str='RestrictionBySlicing') -> None:
        
         if range_indices is None and domain_indices is None:
-            raise ValueError("Either range_indices or image_size must be set.")
+            # We need to know what we are mapping from or to (or both).
+            raise ValueError("Either range_indices or domain_indices must be set.")
 
-        if range_indices is not None and range_size is None or range_indices is None and range_size is not None:
+        if (range_indices is not None and range_size is None) or (range_indices is None and range_size is not None):
             raise ValueError("Both range_indices and image_size must be set.")
 
-            
+        if domain_indices is not None and range_size is None:
+            range_size = domain_indices.size
+
+        assert range_size is not None
 
         self._domain_indices = domain_indices
         self._range_indices = range_indices
@@ -2364,17 +2368,16 @@ class _RestrictionBySlicing(Operator):
         return self
 
     def _slice_vector(self, x: np.ndarray) -> np.ndarray:
-
         if self._domain_indices is None:
             domain_indices = np.arange(x.size)
         else:
             domain_indices = self._domain_indices
         if self._range_indices is None:
-            range_indices = np.arange(x.size)
-            range_size = range_indices.size
+            range_indices = np.arange(self._range_size)
         else:
             range_indices = self._range_indices
-            range_size = self._range_size
+        
+        range_size = self._range_size
         vec = np.zeros(range_size)
         vec[range_indices] = x[domain_indices]
         return vec
@@ -2395,13 +2398,13 @@ class _RestrictionBySlicing(Operator):
             self._range_indices = np.arange(self._domain_indices.size)
             # If no range indices are given, we assume that the range size is the same
             # as the domain size.
-            self._range_size = self._domain_indices.size
         if self._domain_indices is None:
             # If the domain indices are not given, we assume that the domain size is the
             # same as the range size. That is, we will fetch all rows from the matrix
             # and redistribute them.
             self._domain_indices = np.arange(self._range_indices.size)
 
+        #self._range_size = self._domain_indices.size
         # To manipulate index pointers, it is convenient to have the range indices
         # sorted.
         sort_ind_range = np.argsort(self._range_indices)
