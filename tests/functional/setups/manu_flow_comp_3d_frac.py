@@ -3,8 +3,7 @@ This module contains a code verification implementation for a manufactured solut
 the three-dimensional, compressible, single-phase flow with a single, fully embedded
 vertical fracture in the middle of the domain.
 
-The exact solution was obtained by extending the solution from the incompressible
-case as given in Appendix D.2 from [1].
+The exact solution is presented in Section 6.1 from [1].
 
 In particular, we have added a pressure-dependent density which obeys the following
 constitutive relationship:
@@ -19,9 +18,9 @@ fluid compressibility.
 
 References:
 
-    - [1] Varela, J., Ahmed, E., Keilegavlen, E., Nordbotten, J. M., & Radu, F. A.
-      (2022). A posteriori error estimates for hierarchical mixed-dimensional
-      elliptic equations. Journal of Numerical Mathematics.
+    - [1] Stefansson, I., Varela, J., Keilegavlen, E., & Berre, I. (2024). Flexible and
+      rigorous numerical modelling of multiphysics processes in fractured porous
+      media using PorePy. Results in Applied Mathematics, 21, 100428.
 
 """
 from __future__ import annotations
@@ -37,13 +36,12 @@ from tests.functional.setups.manu_flow_comp_2d_frac import (
 from tests.functional.setups.manu_flow_incomp_frac_3d import (
     SingleEmbeddedVerticalPlaneFracture,
 )
-from porepy.models.protocol import PorePyModel
 
 
 class ManuCompExactSolution3d:
     """Class containing the exact manufactured solution for the verification setup."""
 
-    def __init__(self, setup: PorePyModel):
+    def __init__(self, setup: pp.PorePyModel):
         # Model setup
         self.setup = setup
 

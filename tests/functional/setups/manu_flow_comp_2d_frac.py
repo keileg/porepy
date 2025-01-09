@@ -3,8 +3,8 @@ This module contains a code verification implementation for a manufactured solut
 the two-dimensional, compressible, single phase flow with a single, fully embedded
 vertical fracture in the middle of the domain.
 
-The exact solution was obtained by extending the solution from the incompressible
-case [1].
+The exact solution is the 2d version of the 3d manufactured solution presented in
+Section 6.1 from [1].
 
 In particular, we have added a pressure-dependent density which obeys the following
 constitutive relationship:
@@ -19,9 +19,9 @@ fluid compressibility.
 
 References:
 
-    - [1] Varela, J., Ahmed, E., Keilegavlen, E., Nordbotten, J. M., & Radu, F. A.
-      (2022). A posteriori error estimates for hierarchical mixed-dimensional
-      elliptic equations. Journal of Numerical Mathematics.
+    - [1] Stefansson, I., Varela, J., Keilegavlen, E., & Berre, I. (2024). Flexible and
+      rigorous numerical modelling of multiphysics processes in fractured porous
+      media using PorePy. Results in Applied Mathematics, 21, 100428.
 
 """
 from __future__ import annotations
@@ -40,7 +40,6 @@ from tests.functional.setups.manu_flow_incomp_frac_2d import (
     ManuIncompUtils,
     SingleEmbeddedVerticalLineFracture,
 )
-from porepy.models.protocol import PorePyModel
 
 # PorePy typings
 number = pp.number
@@ -205,7 +204,7 @@ class ManuCompDataSaving(VerificationDataSaving):
 class ManuCompExactSolution2d:
     """Class containing the exact manufactured solution for the verification setup."""
 
-    def __init__(self, setup: PorePyModel):
+    def __init__(self, setup: pp.PorePyModel):
         """Constructor of the class."""
 
         # Retrieve material constant from the setup
@@ -772,7 +771,7 @@ class ManuCompFlowSetup2d(  # type: ignore[misc]
     ManuCompSolutionStrategy2d,
     ManuIncompUtils,
     ManuCompDataSaving,
-    pp.fluid_mass_balance.SinglePhaseFlow,
+    pp.SinglePhaseFlow,
 ):
     """
     Mixer class for the 2d compressible flow setup with a single fracture.

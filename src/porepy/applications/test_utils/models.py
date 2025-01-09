@@ -40,34 +40,34 @@ class NoPhysics(  # type: ignore[misc]
 
 class MassBalance(  # type: ignore[misc]
     RectangularDomainThreeFractures,
-    pp.fluid_mass_balance.SinglePhaseFlow,
+    pp.SinglePhaseFlow,
 ): ...
 
 
 class MomentumBalance(  # type: ignore[misc]
     RectangularDomainThreeFractures,
-    pp.momentum_balance.MomentumBalance,
+    pp.MomentumBalance,
 ):
     """Combine components needed for momentum balance simulation."""
 
 
 class MassAndEnergyBalance(  # type: ignore[misc]
     RectangularDomainThreeFractures,
-    pp.mass_and_energy_balance.MassAndEnergyBalance,
+    pp.MassAndEnergyBalance,
 ):
     """Combine components needed for force balance simulation."""
 
 
 class Poromechanics(  # type: ignore[misc]
     RectangularDomainThreeFractures,
-    pp.poromechanics.Poromechanics,
+    pp.Poromechanics,
 ):
     """Combine components needed for poromechanics simulation."""
 
 
 class Thermoporomechanics(  # type: ignore[misc]
     RectangularDomainThreeFractures,
-    pp.thermoporomechanics.Thermoporomechanics,
+    pp.Thermoporomechanics,
 ):
     """Combine components needed for poromechanics simulation."""
 
@@ -96,15 +96,15 @@ def model(
     # Identify the physics class
     model_class: Any = None
     if model_type == "mass_balance":
-        model_class = pp.fluid_mass_balance.SinglePhaseFlow
+        model_class = pp.SinglePhaseFlow
     elif model_type == "momentum_balance":
-        model_class = pp.momentum_balance.MomentumBalance
+        model_class = pp.MomentumBalance
     elif model_type == "energy_balance" or model_type == "mass_and_energy_balance":
-        model_class = pp.mass_and_energy_balance.MassAndEnergyBalance
+        model_class = pp.MassAndEnergyBalance
     elif model_type == "poromechanics":
-        model_class = pp.poromechanics.Poromechanics
+        model_class = pp.Poromechanics
     elif model_type == "thermoporomechanics":
-        model_class = pp.thermoporomechanics.Thermoporomechanics
+        model_class = pp.Thermoporomechanics
     else:
         # To add a new model, insert an elif clause here, and a new class above.
         raise ValueError(f"Unknown model type {model_type}")
@@ -277,32 +277,6 @@ def _add_mixin(mixin, parent):
     # such an addition could not be made in the mixin class instead.
     cls = type(name, (mixin, parent), {})
     return cls
-
-
-# TODO: Purge in favour of pp.solid_values.granite
-granite_values = {
-    "biot_coefficient": 0.8,
-    "permeability": 1e-20,
-    "density": 2700,
-    "porosity": 7e-3,
-    "shear_modulus": 16.67 * pp.GIGA,
-    "lame_lambda": 11.11 * pp.GIGA,
-    "specific_heat_capacity": 790,
-    "thermal_conductivity": 2.5,
-    "thermal_expansion": 1e-5,
-    "fracture_normal_stiffness": 1529,
-    "maximum_elastic_fracture_opening": 1e-4,
-    "fracture_gap": 1e-4,
-    "residual_aperture": 0.01,
-}
-water_values = {
-    "specific_heat_capacity": 4180,
-    "compressibility": 4e-10,
-    "viscosity": 1e-3,
-    "density": 1000,
-    "thermal_conductivity": 0.6,
-    "thermal_expansion": 2.1e-4,
-}
 
 
 def compare_scaled_primary_variables(

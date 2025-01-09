@@ -119,7 +119,7 @@ class BoundaryConditions:
         values[bounds.west] = val * boundary_grid.cell_volumes[bounds.west]
         # Scale with specific volume.
         sd = boundary_grid.parent
-        trace = np.abs(sd.cell_faces)
+        trace = sd.trace()
         specific_volumes = self.specific_volume([sd]).value(self.equation_system)
         values *= boundary_grid.projection() @ trace @ specific_volumes
         return values
@@ -157,6 +157,6 @@ class FlowBenchmark2dCase1Model(  # type:ignore[misc]
     Geometry,
     Permeability,
     BoundaryConditions,
-    pp.fluid_mass_balance.SinglePhaseFlow,
+    pp.SinglePhaseFlow,
 ):
     """Complete model class for case 1 from the 2d flow benchmark."""

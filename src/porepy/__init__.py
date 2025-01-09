@@ -84,7 +84,7 @@ from porepy.params.data import (
 from porepy.applications.material_values import fluid_values
 from porepy.applications.material_values import solid_values
 from porepy.applications.material_values import reference_values
-
+from porepy.applications.material_values import numerical_values
 
 # Grids
 from porepy.grids.grid import Grid
@@ -148,6 +148,9 @@ from porepy.numerics.fracture_deformation.conforming_propagation import (
     ConformingFracturePropagation,
 )
 
+# The protocol must be imported before anything related to models.
+from porepy.models.protocol import PorePyModel
+
 # Related to models and solvers
 from porepy.numerics.nonlinear.nonlinear_solvers import NewtonSolver
 from porepy.numerics.linear_solvers import LinearSolver
@@ -188,6 +191,7 @@ from . import compositional
 from porepy.compositional.materials import (
     FluidComponent,
     SolidConstants,
+    NumericalConstants,
     Constants,
     ReferenceVariableValues,
 )
