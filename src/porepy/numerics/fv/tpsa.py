@@ -747,6 +747,7 @@ class Tpsa:
                 # the normal vector, reflecting the expression in the paper.
                 @ sps.kron(sd.cell_faces, sps.eye(nd), format="csr")
             )
+            tmp = []
 
         elif nd == 2:
             # In this case, \hat{R}_k^n and \bar{R}_k^n differ, and read, respectively
