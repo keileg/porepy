@@ -116,7 +116,6 @@ class InitialConditionsThermoporomechanics(
     pp.energy_balance.InitialConditionsEnergy,
     pp.fluid_mass_balance.InitialConditionsSinglePhaseFlow,
     pp.momentum_balance.InitialConditionsMomentumBalance,
-    pp.contact_mechanics.InitialConditionsContactTraction,
 ):
     """Combines initial conditions for energy, mass and momentum balance and contact
     mechanics and associated primary variables."""
