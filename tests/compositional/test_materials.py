@@ -23,6 +23,7 @@ from dataclasses import FrozenInstanceError
 from porepy.compositional.materials import FractureDamageSolidConstants
 
 from porepy.examples.flow_benchmark_2d_case_1 import FractureSolidConstants
+from porepy.compositional.materials import FractureDamageSolidConstants
 
 
 # TODO remove
