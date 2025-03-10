@@ -516,7 +516,12 @@ class SecondOrderTensorUtils(pp.PorePyModel):
 
         """
         # Evaluate as 9 x num_cells array
-        volume = self.equation_system.evaluate(self.specific_volume([sd]))
+        if isinstance(sd, list):
+            # TODO (before PR): Decide if the signature should change to list of operators
+            vol = self.specific_volume(sd)
+        else:
+            vol = self.specific_volume([sd])
+        volume = self.equation_system.evaluate(vol)
         try:
             permeability = self.equation_system.evaluate(operator)
         except KeyError:

@@ -1132,19 +1132,35 @@ class SolutionStrategyEnergyBalance(pp.SolutionStrategy):
         interfaces (of codimension 1).
         """
         super().set_discretization_parameters()
+
+        subdomains = self.mdg.subdomains()
+        conductivity_all_cells = self.operator_to_SecondOrderTensor(
+            subdomains, self.permeability(subdomains), self.solid.permeability
+        )
+
+        sd_start = np.cumsum([0] + [sd.num_cells for sd in subdomains])
+
+        val = conductivity_all_cells.values
+
         for sd, data in self.mdg.subdomains(return_data=True):
+            slc = slice(sd_start[sd.id], sd_start[sd.id + 1])
+
+            loc_conductivity = pp.SecondOrderTensor(
+                kxx=val[0, 0, slc],
+                kyy=val[1, 1, slc],
+                kzz=val[2, 2, slc],
+                kxy=val[0, 1, slc],
+                kxz=val[0, 2, slc],
+                kyz=val[1, 2, slc],
+            )
+
             pp.initialize_data(
                 sd,
                 data,
                 self.fourier_keyword,
                 {
                     "bc": self.bc_type_fourier_flux(sd),
-                    "second_order_tensor": self.operator_to_SecondOrderTensor(
-                        sd,
-                        self.thermal_conductivity([sd]),
-                        # Fall back to thermal conductivity of reference component.
-                        self.fluid.reference_component.thermal_conductivity,
-                    ),
+                    "second_order_tensor": loc_conductivity,
                     "ambient_dimension": self.nd,
                 },
             )

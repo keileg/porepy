@@ -908,16 +908,42 @@ class SolutionStrategySinglePhaseFlow(pp.SolutionStrategy):
 
         """
         super().set_discretization_parameters()
+        # Profiling indicated that for problems with many subdomains, evaluating the
+        # permeability for one subdomain at a time is a significant bottleneck. We
+        # therefore evaluate the permeability for all subdomains at
+        # once, and then assign the values to the individual subdomains.
+        subdomains = self.mdg.subdomains()
+        permeability_all_cells = self.operator_to_SecondOrderTensor(
+            subdomains, self.permeability(subdomains), self.solid.permeability
+        )
+
+        # Get the start indices of individual subdomains in the permeability array.
+        sd_start = np.cumsum([0] + [sd.num_cells for sd in subdomains])
+
+        val = permeability_all_cells.values
         for sd, data in self.mdg.subdomains(return_data=True):
+            # Use a slice to extract the permeability values for the current subdomain.
+            slc = slice(sd_start[sd.id], sd_start[sd.id + 1])
+            # If we implement a method to extract a subtensor from a SecondOrderTensor
+            # based on a slice, or cell indices, the following can be much simplified.
+            # Additionally, if SecondOrderTensor is equipped with flags that tell
+            # whether it is isotropic or diagonal, we need not extract all components.
+            loc_perm = pp.SecondOrderTensor(
+                kxx=val[0, 0, slc],
+                kyy=val[1, 1, slc],
+                kzz=val[2, 2, slc],
+                kxy=val[0, 1, slc],
+                kxz=val[0, 2, slc],
+                kyz=val[1, 2, slc],
+            )
+
             pp.initialize_data(
                 sd,
                 data,
                 self.darcy_keyword,
                 {
                     "bc": self.bc_type_darcy_flux(sd),
-                    "second_order_tensor": self.operator_to_SecondOrderTensor(
-                        sd, self.permeability([sd]), self.solid.permeability
-                    ),
+                    "second_order_tensor": loc_perm,
                     "ambient_dimension": self.nd,
                 },
             )
