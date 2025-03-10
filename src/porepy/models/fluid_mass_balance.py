@@ -974,13 +974,34 @@ class SolutionStrategySinglePhaseFlow(pp.SolutionStrategy):
 
         """
         # Update parameters *before* the discretization matrices are re-computed.
-        for sd, data in self.mdg.subdomains(return_data=True):
-            vals = self.equation_system.evaluate(self.darcy_flux([sd]))
+
+        # Evaluate the Darcy flux for all subdomains together.
+        subdomains = self.mdg.subdomains()
+        darcy_flux = self.equation_system.evaluate(self.darcy_flux(subdomains))
+        subdomain_offsets = np.cumsum([0] + [sd.num_faces for sd in subdomains])
+
+        for sd in subdomains:
+            # Update the data dictionary with the Darcy flux for the current subdomain.
+            data = self.mdg.subdomain_data(sd)
+            vals = darcy_flux[subdomain_offsets[sd.id] : subdomain_offsets[sd.id + 1]]
             data[pp.PARAMETERS][self.mobility_keyword].update({"darcy_flux": vals})
 
-        for intf, data in self.mdg.interfaces(return_data=True, codim=1):
-            vals = self.equation_system.evaluate(self.interface_darcy_flux([intf]))
+        # Evaluate the Darcy flux for all interfaces together.
+        interfaces = self.mdg.interfaces(codim=1)
+        interface_darcy_flux = self.equation_system.evaluate(
+            self.interface_darcy_flux(interfaces)
+        )
+        interface_offsets = np.cumsum([0] + [intf.num_cells for intf in interfaces])
+
+        for intf in interfaces:
+            # Update the data dictionary with the Darcy flux for the current interface.
+            data = self.mdg.interface_data(intf)
+            vals = interface_darcy_flux[
+                interface_offsets[intf.id] : interface_offsets[intf.id + 1]
+            ]
             data[pp.PARAMETERS][self.mobility_keyword].update({"darcy_flux": vals})
+
+        # The well fluxes are so few that we evaluate them iteratively.
         for intf, data in self.mdg.interfaces(return_data=True, codim=2):
             vals = self.equation_system.evaluate(self.well_flux([intf]))
             data[pp.PARAMETERS][self.mobility_keyword].update({"darcy_flux": vals})
