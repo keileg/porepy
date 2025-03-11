@@ -921,9 +921,10 @@ class SolutionStrategySinglePhaseFlow(pp.SolutionStrategy):
         sd_start = np.cumsum([0] + [sd.num_cells for sd in subdomains])
 
         val = permeability_all_cells.values
-        for sd, data in self.mdg.subdomains(return_data=True):
+        for id, sd in enumerate(subdomains):
+            data = self.mdg.subdomain_data(sd)
             # Use a slice to extract the permeability values for the current subdomain.
-            slc = slice(sd_start[sd.id], sd_start[sd.id + 1])
+            slc = slice(sd_start[id], sd_start[id + 1])
             # If we implement a method to extract a subtensor from a SecondOrderTensor
             # based on a slice, or cell indices, the following can be much simplified.
             # Additionally, if SecondOrderTensor is equipped with flags that tell
@@ -980,10 +981,10 @@ class SolutionStrategySinglePhaseFlow(pp.SolutionStrategy):
         darcy_flux = self.equation_system.evaluate(self.darcy_flux(subdomains))
         subdomain_offsets = np.cumsum([0] + [sd.num_faces for sd in subdomains])
 
-        for sd in subdomains:
+        for id, sd in enumerate(subdomains):
             # Update the data dictionary with the Darcy flux for the current subdomain.
             data = self.mdg.subdomain_data(sd)
-            vals = darcy_flux[subdomain_offsets[sd.id] : subdomain_offsets[sd.id + 1]]
+            vals = darcy_flux[subdomain_offsets[id] : subdomain_offsets[id + 1]]
             data[pp.PARAMETERS][self.mobility_keyword].update({"darcy_flux": vals})
 
         # Evaluate the Darcy flux for all interfaces together.
@@ -993,11 +994,11 @@ class SolutionStrategySinglePhaseFlow(pp.SolutionStrategy):
         )
         interface_offsets = np.cumsum([0] + [intf.num_cells for intf in interfaces])
 
-        for intf in interfaces:
+        for id, intf in enumerate(interfaces):
             # Update the data dictionary with the Darcy flux for the current interface.
             data = self.mdg.interface_data(intf)
             vals = interface_darcy_flux[
-                interface_offsets[intf.id] : interface_offsets[intf.id + 1]
+                interface_offsets[id] : interface_offsets[id + 1]
             ]
             data[pp.PARAMETERS][self.mobility_keyword].update({"darcy_flux": vals})
 

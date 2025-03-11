@@ -1142,8 +1142,9 @@ class SolutionStrategyEnergyBalance(pp.SolutionStrategy):
 
         val = conductivity_all_cells.values
 
-        for sd, data in self.mdg.subdomains(return_data=True):
-            slc = slice(sd_start[sd.id], sd_start[sd.id + 1])
+        for id, sd in enumerate(subdomains):
+            data = self.mdg.subdomain_data(sd)
+            slc = slice(sd_start[id], sd_start[id + 1])
 
             loc_conductivity = pp.SecondOrderTensor(
                 kxx=val[0, 0, slc],
