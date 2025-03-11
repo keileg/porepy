@@ -130,6 +130,8 @@ class SolutionStrategy(pp.PorePyModel):
 
         self.set_solver_statistics()
 
+        self._operator_cache = {}
+
     def prepare_simulation(self) -> None:
         """Run at the start of simulation. Used for initialization etc."""
         # Set the material and geometry of the problem. The geometry method must be
