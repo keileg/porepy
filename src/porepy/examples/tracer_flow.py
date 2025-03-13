@@ -107,6 +107,7 @@ class TracerBC(BoundaryConditionsMassDirNorthSouth, BoundaryConditionsMulticompo
 
 class TracerFlowModel(  # type: ignore[misc]
     SquareDomainOrthogonalFractures,
+    # pp.constitutive_laws.DisplacementJump,
     TracerFluid,
     CompositionalVariables,
     ComponentMassBalanceEquations,
