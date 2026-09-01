@@ -1,3 +1,6 @@
+# Claude Code planning/working files: never committed to this repo.
+.claude/
+
 # Python packaging
 .Python
 bin/
