@@ -11,6 +11,7 @@ from . import (
     newton_solver,
     nonlinear_solvers,
     sequential_nonlinear_solver,
+    telemetry,
 )
 from .anderson_acceleration import *
 from .convergence_check import *
@@ -25,6 +26,7 @@ from .linear_solvers.linear_solver import (
 from .newton_solver import *
 from .nonlinear_solvers import *
 from .sequential_nonlinear_solver import *
+from .telemetry import *
 
 __all__.extend(anderson_acceleration.__all__)
 __all__.extend(convergence_check.__all__)
@@ -34,3 +36,4 @@ __all__.extend(nonlinear_solvers.__all__)
 __all__.extend(linear_solvers.__all__)
 __all__.extend(equation_variable_tags.__all__)
 __all__.extend(sequential_nonlinear_solver.__all__)
+__all__.extend(telemetry.__all__)
