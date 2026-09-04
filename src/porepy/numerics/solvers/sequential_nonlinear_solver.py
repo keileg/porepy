@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from numbers import Real
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 from warnings import warn
 
 import numpy as np
@@ -30,6 +30,11 @@ from porepy.numerics.solvers.nonlinear_solvers import (
     NonlinearSolverStatusConverged,
     NonlinearSolverStatusFailed,
 )
+
+if TYPE_CHECKING:
+    # Deferred to avoid a runtime circular import: telemetry.py is imported last by
+    # numerics.solvers.__init__ (see the comment there), after this module.
+    from porepy.numerics.solvers.telemetry import NonlinearIterationRecorder
 
 __all__ = [
     "SequentialSolverConverged",
@@ -85,6 +90,12 @@ class SequentialNonlinearSolver(NonlinearSolverBase):
             are initialized.
         divergence_criteria: For the full problem. If None (default), default criteria
             are initialized.
+        telemetry: Optional recorder for solver telemetry on the full (outer) system.
+            If None (default), no telemetry is recorded for the outer loop. To also
+            record each subsolver's own inner iterations, pass the same recorder
+            instance to each subsolver's own `telemetry` parameter -- this class does
+            not do that automatically, since a subsolver's telemetry is that
+            subsolver's own choice. See `porepy.numerics.solvers.telemetry`.
 
     """
 
@@ -94,6 +105,7 @@ class SequentialNonlinearSolver(NonlinearSolverBase):
         max_iterations: int = 10,
         convergence_criteria: Optional[ConvergenceCriteria] = None,
         divergence_criteria: Optional[DivergenceCriteria] = None,
+        telemetry: Optional[NonlinearIterationRecorder] = None,
     ) -> None:
         self.subsolvers = subsolvers
         """List of subsolvers."""
@@ -122,6 +134,11 @@ class SequentialNonlinearSolver(NonlinearSolverBase):
         """For the full problem."""
         self.divergence_criteria = divergence_criteria
         """For the full problem."""
+        self.telemetry: Optional[NonlinearIterationRecorder] = telemetry
+        """Optional recorder for telemetry on the full (outer) system. None (default)
+        records nothing.
+
+        """
 
     def get_active_equations(
         self, model: pp.PorePyModel
@@ -231,6 +248,21 @@ class SequentialNonlinearSolver(NonlinearSolverBase):
                 max_iterations=self.max_iterations,
                 convergence_info=convergence_info,
             )
+
+            if self.telemetry is not None:
+                self.telemetry.record_outer_iteration(
+                    model=model,
+                    iteration_index=iteration_index + 1,
+                    nonlinear_increment=new_iterate - old_iterate,
+                    full_residual=full_residual,
+                    equation_indexer=pp.ad.construct_matching_restricted_indexer(
+                        model.equation_system.equation_indexer,
+                        self.get_active_equations(model),
+                    ),
+                    convergence_status=convergence_status,
+                    divergence_status=divergence_status,
+                    convergence_info=convergence_info,
+                )
 
             # Handle success or failure.
             if convergence_status.is_converged():

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from time import time
-from typing import Optional, cast
+from typing import TYPE_CHECKING, Optional, cast
 from warnings import warn
 
 import numpy as np
@@ -36,6 +36,11 @@ from porepy.utils.ui_and_logging import (
     logging_redirect_tqdm_with_level as logging_redirect_tqdm,
 )
 from porepy.utils.ui_and_logging import progressbar_class
+
+if TYPE_CHECKING:
+    # Deferred to avoid a runtime circular import: telemetry.py is imported last by
+    # numerics.solvers.__init__ (see the comment there), after newton_solver.py.
+    from porepy.numerics.solvers.telemetry import NonlinearIterationRecorder
 
 __all__ = [
     "NewtonSolverConverged",
@@ -99,6 +104,10 @@ class NewtonSolver(NonlinearSolverBase):
         variable_tags: List of tags that describes variables and domains this solver
             operates on. If None (default), it operates on all the variables in the
             model.
+        telemetry: Optional recorder for solver telemetry (per-block residuals,
+            convergence status, contact-state counts, ...). If None (default), no
+            telemetry is recorded and this solver behaves exactly as without this
+            parameter. See `porepy.numerics.solvers.telemetry`.
 
     If custom convergence or divergence criteria are provided, individual tolerance
     parameters should not be provided to avoid double specification. If no custom
@@ -114,6 +123,7 @@ class NewtonSolver(NonlinearSolverBase):
         linear_solver: Optional[LinearSolverBase] = None,
         equation_tags: Optional[list[EquationTag]] = None,
         variable_tags: Optional[list[VariableTag]] = None,
+        telemetry: Optional[NonlinearIterationRecorder] = None,
     ) -> None:
         if params is None:
             params = {}
@@ -165,6 +175,8 @@ class NewtonSolver(NonlinearSolverBase):
         variables.
 
         """
+        self.telemetry: Optional[NonlinearIterationRecorder] = telemetry
+        """Optional recorder for solver telemetry. None (default) records nothing."""
 
         self.init_convergence_criteria(is_nonlinear_problem=is_nonlinear_problem)
         self.init_divergence_criteria(is_nonlinear_problem=is_nonlinear_problem)
@@ -457,6 +469,9 @@ class NewtonSolver(NonlinearSolverBase):
         # Reset solver progressbar.
         self.init_solver_progressbar()
 
+        if self.telemetry is not None:
+            self.telemetry.before_nonlinear_loop(model)
+
     def nonlinear_loop(
         self, model: pp.PorePyModel
     ) -> tuple[
@@ -489,9 +504,28 @@ class NewtonSolver(NonlinearSolverBase):
                 linear_solver_statuses.append(linear_solver_status)
 
                 # Finalize nonlinear iteration and determine status.
-                convergence_status, divergence_status = self.after_nonlinear_iteration(
-                    model, nonlinear_increment
+                convergence_status, divergence_status, convergence_info, residual = (
+                    self.after_nonlinear_iteration(model, nonlinear_increment)
                 )
+
+                # residual is None only if model.after_nonlinear_iteration itself
+                # failed (e.g. NaNs), in which case there is nothing meaningful to
+                # record.
+                if self.telemetry is not None and residual is not None:
+                    self.telemetry.record_iteration(
+                        model=model,
+                        iteration_index=self.iteration_index,
+                        nonlinear_increment=nonlinear_increment,
+                        residual=residual,
+                        equation_indexer=pp.ad.construct_matching_restricted_indexer(
+                            model.equation_system.equation_indexer,
+                            self.get_active_equations(model),
+                        ),
+                        linear_solver_status=linear_solver_status,
+                        convergence_status=convergence_status,
+                        divergence_status=divergence_status,
+                        convergence_info=convergence_info,
+                    )
 
                 # Exit the Newton loop.
                 if convergence_status.is_converged() or divergence_status.is_failed():
@@ -559,7 +593,12 @@ class NewtonSolver(NonlinearSolverBase):
 
     def after_nonlinear_iteration(
         self, model: pp.PorePyModel, nonlinear_increment: np.ndarray
-    ) -> tuple[ConvergenceStatusCollection, ConvergenceStatusCollection]:
+    ) -> tuple[
+        ConvergenceStatusCollection,
+        ConvergenceStatusCollection,
+        ConvergenceInfoCollection,
+        Optional[np.ndarray],
+    ]:
         """Finalize a nonlinear iteration.
 
         Parameters:
@@ -567,8 +606,13 @@ class NewtonSolver(NonlinearSolverBase):
             nonlinear_increment: Newly obtained solution increment vector.
 
         Returns:
-            tuple[ConvergenceStatusCollection, ConvergenceStatusCollection]:
-                Convergence and divergence status.
+            tuple[ConvergenceStatusCollection, ConvergenceStatusCollection,
+            ConvergenceInfoCollection, Optional[np.ndarray]]:
+                Convergence status, divergence status, convergence info, and the
+                residual checked against. The residual is `None` only if
+                `model.after_nonlinear_iteration` itself failed before one could be
+                assembled, in which case the other three are also placeholders (no
+                real convergence check was performed).
 
         """
         # Update model status (iterate) before checking convergence, so that the
@@ -594,9 +638,12 @@ class NewtonSolver(NonlinearSolverBase):
             # Return a failed convergence and divergence status to indicate that the
             # nonlinear solver has failed.
             failure = ConvergenceStatusCollection({message: ConvergenceStatus.FAILED})
-            return failure, failure
+            return failure, failure, {}, None
 
         # Monitor convergence.
+        residual = model.equation_system.assemble(
+            evaluate_jacobian=False, equations=self.get_active_equations(model)
+        )
         convergence_status, divergence_status, convergence_info = check_convergence(
             convergence_criteria=self.convergence_criteria,
             divergence_criteria=self.divergence_criteria,
@@ -604,9 +651,7 @@ class NewtonSolver(NonlinearSolverBase):
             solution=model.equation_system.get_variable_values(
                 variables=self.get_active_variables(model), iterate_index=0
             ),
-            residual=model.equation_system.assemble(
-                evaluate_jacobian=False, equations=self.get_active_equations(model)
-            ),
+            residual=residual,
             iteration_index=self.iteration_index,
         )
 
@@ -620,7 +665,7 @@ class NewtonSolver(NonlinearSolverBase):
             convergence_info=convergence_info,
         )
 
-        return convergence_status, divergence_status
+        return convergence_status, divergence_status, convergence_info, residual
 
     def check_convergence(
         self,

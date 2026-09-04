@@ -1,5 +1,7 @@
 """Unit tests for the sequential nonlinear solver."""
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -8,6 +10,11 @@ from porepy.numerics.ad.indexers import EquationOnDomain
 from porepy.numerics.ad.operators import Variable
 from porepy.numerics.solvers.convergence_check import ConvergenceStatus
 from porepy.numerics.solvers.nonlinear_solvers import NonlinearSolverStatus
+from porepy.numerics.solvers.telemetry import (
+    NonlinearTelemetryRecorder,
+    TelemetryConfig,
+    read_jsonl_records,
+)
 
 
 class MockEquationSystem:
@@ -253,3 +260,59 @@ def test_active_equations_variables(
         dict.fromkeys(var for vars in active_variables_per_solver for var in vars)
     )
     assert actual_active_variables == expected_active_variables
+
+
+def test_telemetry_records_one_outer_iteration_record_per_iteration(
+    tmp_path: Path,
+) -> None:
+    """Wiring test: `SequentialNonlinearSolver.solve()` calls `record_outer_iteration`
+    once per outer iteration, with the matching `iteration_index`, when given a
+    recorder -- and not at all when `telemetry` is left at its default `None`.
+
+    """
+    model = pp.SinglePhaseFlow()
+    model.equation_system = MockEquationSystem()
+    config = TelemetryConfig(output_path=tmp_path / "telemetry.jsonl")
+    recorder = NonlinearTelemetryRecorder(config)
+
+    solver = pp.solvers.SequentialNonlinearSolver(
+        subsolvers=[
+            MockInnerSolver(
+                nonlinear_solve_success=[True, True],
+                active_equations=equations_a,
+                active_variables=variables_a,
+            ),
+        ],
+        convergence_criteria=pp.solvers.ConvergenceCriteria(
+            crit=MockConvergenceCriterion(success_after=2)
+        ),
+        telemetry=recorder,
+    )
+    status = solver.solve(model=model)
+
+    assert isinstance(status, pp.solvers.SequentialSolverConverged)
+    assert status.number_of_iterations() == 2
+
+    records = read_jsonl_records(tmp_path / "telemetry.jsonl")
+    assert [r["record_type"] for r in records] == ["outer_iteration"] * 2
+    assert [r["iteration_index"] for r in records] == [1, 2]
+
+
+def test_no_telemetry_by_default_records_nothing(tmp_path: Path) -> None:
+    model = pp.SinglePhaseFlow()
+    model.equation_system = MockEquationSystem()
+
+    solver = pp.solvers.SequentialNonlinearSolver(
+        subsolvers=[
+            MockInnerSolver(
+                nonlinear_solve_success=[True],
+                active_equations=equations_a,
+                active_variables=variables_a,
+            ),
+        ],
+        convergence_criteria=pp.solvers.ConvergenceCriteria(
+            crit=MockConvergenceCriterion(success_after=1)
+        ),
+    )
+    assert solver.telemetry is None
+    solver.solve(model=model)  # Must not raise.

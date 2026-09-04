@@ -28,6 +28,12 @@ from porepy.numerics.solvers.nonlinear_solvers import (
     NonlinearSolverStatusConverged,
     NonlinearSolverStatusFailed,
 )
+from porepy.numerics.solvers.telemetry import (
+    NonlinearTelemetryRecorder,
+    TelemetryConfig,
+    read_jsonl_records,
+    validate_record,
+)
 from porepy.time_stepper.time_step_status import (
     TimeStepperAttemptData,
     TimeStepperStatusContinueIterating,
@@ -726,7 +732,7 @@ def test_after_nonlinear_iteration(
     model.nonlinear_solver_statistics.num_iterations_history = [iteration_index]
 
     # Check convergence.
-    convergence_status, divergence_status = solver.after_nonlinear_iteration(
+    convergence_status, divergence_status, _, _ = solver.after_nonlinear_iteration(
         model, model.nonlinear_increment
     )
 
@@ -955,3 +961,51 @@ def test_rejected_iterate_is_not_accepted_as_converged():
     assert isinstance(status, NonlinearSolverStatusFailed)
     assert not status.is_converged()
     assert status.is_failed()
+
+
+# ! ---- Test telemetry wiring ---- ! #
+
+
+class TestTelemetryWiring:
+    """Wiring tests: does telemetry actually get recorded through a real
+    NewtonSolver.solve() call, and is the default (`telemetry=None`) behavior
+    unchanged. Field-content correctness is `test_telemetry.py`'s job; these tests are
+    about the wiring itself.
+
+    """
+
+    @staticmethod
+    def _run(telemetry) -> np.ndarray:
+        model = SinglePhaseFlow({"times_to_export": []})
+        solver = pp.solvers.NewtonSolver(telemetry=telemetry)
+        pp.ModelRunner(model, {}, nonlinear_solver=solver).run()
+        return model.equation_system.get_variable_values(iterate_index=0)
+
+    def test_default_telemetry_is_none(self) -> None:
+        solver = pp.solvers.NewtonSolver()
+        assert solver.telemetry is None
+
+    def test_telemetry_records_one_iteration_record_per_iteration(
+        self, tmp_path: Path
+    ) -> None:
+        config = TelemetryConfig(output_path=tmp_path / "telemetry.jsonl")
+        recorder = NonlinearTelemetryRecorder(config)
+
+        self._run(recorder)
+
+        records = read_jsonl_records(tmp_path / "telemetry.jsonl")
+        assert len(records) >= 1
+        assert [r["record_type"] for r in records] == ["iteration"] * len(records)
+        assert [r["iteration_index"] for r in records] == list(
+            range(1, len(records) + 1)
+        )
+        for record in records:
+            validate_record(record)
+
+    def test_telemetry_does_not_change_the_final_state(self, tmp_path: Path) -> None:
+        state_without_telemetry = self._run(None)
+
+        config = TelemetryConfig(output_path=tmp_path / "telemetry.jsonl")
+        state_with_telemetry = self._run(NonlinearTelemetryRecorder(config))
+
+        np.testing.assert_array_equal(state_without_telemetry, state_with_telemetry)

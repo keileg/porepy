@@ -16,6 +16,11 @@ from porepy.models.model_runner import ModelRunner, ModelRunnerStatusFailure
 from porepy.models.protocol import PorePyModel
 from porepy.numerics.ad.indexers import EquationOnDomain
 from porepy.numerics.ad.operators import Variable
+from porepy.numerics.solvers.telemetry import (
+    NonlinearTelemetryRecorder,
+    TelemetryConfig,
+    read_jsonl_records,
+)
 from porepy.time_stepper.scheduler import assemble_default_time_scheduler
 from porepy.time_stepper.time_step_control import Schedule, TimeInterval, TimeManager
 from porepy.time_stepper.time_stepper import TimeStepper
@@ -877,3 +882,40 @@ def test_solve_failure_time_dependent_statistics(statistics_path: Path):
         )
         == {}
     )
+
+
+# MARK: test_telemetry wiring
+
+
+def test_time_stepper_default_telemetry_is_none() -> None:
+    model = SinglePhaseFlow({"times_to_export": []})
+    time_stepper = TimeStepper(
+        scheduler=assemble_default_time_scheduler(time_manager=model.time_manager)
+    )
+    assert time_stepper.telemetry is None
+
+
+def test_time_stepper_records_one_time_step_record_per_attempt(
+    tmp_path: Path,
+) -> None:
+    """Wiring test: a converged time step calls `record_time_step` once, with a
+    "successful" status.
+
+    """
+    model = SinglePhaseFlow({"times_to_export": []})
+    model.time_manager = TimeManager(schedule=[0, 1], dt_init=1, constant_dt=True)
+    model.prepare_simulation()
+    config = TelemetryConfig(output_path=tmp_path / "telemetry.jsonl")
+    recorder = NonlinearTelemetryRecorder(config)
+    time_stepper = TimeStepper(
+        scheduler=assemble_default_time_scheduler(time_manager=model.time_manager),
+        telemetry=recorder,
+    )
+    solver = pp.solvers.NewtonSolver()
+
+    status = time_stepper.perform_time_step(model=model, solver=solver)
+
+    assert status.is_success()
+    records = read_jsonl_records(tmp_path / "telemetry.jsonl")
+    assert [r["record_type"] for r in records] == ["time_step"]
+    assert records[0]["status"] == "successful"

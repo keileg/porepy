@@ -6,7 +6,7 @@ time step.
 from __future__ import annotations
 
 import logging
-from typing import Self
+from typing import Optional, Self
 
 import porepy as pp
 from porepy.numerics import solvers
@@ -48,16 +48,30 @@ class TimeStepper:
         scheduler: Class that adjusts dt to match the schedule and constraints.
         max_attempts: Limit of attempts to make a single time step. Set it to 1 for no
             retries.
+        telemetry: Optional recorder for solver telemetry on each time-step attempt.
+            If None (default), no telemetry is recorded. See
+            `porepy.numerics.solvers.telemetry`.
 
     """
 
-    def __init__(self, scheduler: TimeSchedulerBase, max_attempts: int = 10) -> None:
+    def __init__(
+        self,
+        scheduler: TimeSchedulerBase,
+        max_attempts: int = 10,
+        telemetry: Optional[solvers.NonlinearIterationRecorder] = None,
+    ) -> None:
         self.scheduler = scheduler
         """Class that adjusts dt to match the schedule and constraints."""
 
         assert max_attempts > 0, "max_attempts must be greater than 0."
         self.max_attempts = max_attempts
         """Maximum number of retry attempts."""
+
+        self.telemetry: Optional[solvers.NonlinearIterationRecorder] = telemetry
+        """Optional recorder for telemetry on each time-step attempt. None (default)
+        records nothing.
+
+        """
 
     def perform_time_step(
         self,
@@ -84,6 +98,13 @@ class TimeStepper:
         def roll_back_time() -> None:
             time_manager.time = accepted_time
             time_manager.time_index = accepted_index
+
+        def conclude_attempt(status: TimeStepperStatus) -> TimeStepperStatus:
+            """Update the model after an attempt and record telemetry for it."""
+            _log_and_return_time_step_data(model, status)
+            if self.telemetry is not None:
+                self.telemetry.record_time_step(model, status)
+            return status
 
         for attempt in range(self.max_attempts):
             attempted_dt = time_manager.dt
@@ -123,8 +144,7 @@ class TimeStepper:
                 roll_back_time()
 
                 if attempt == self.max_attempts - 1:
-                    return _log_and_return_time_step_data(
-                        model,
+                    return conclude_attempt(
                         TimeStepperStatusFailure(
                             reason=(
                                 f"Max attempts ({self.max_attempts}) exhausted; "
@@ -152,8 +172,7 @@ class TimeStepper:
                 # else, so must be called once here. Calling it twice is harmless.
                 roll_back_time()
 
-                return _log_and_return_time_step_data(
-                    model,
+                return conclude_attempt(
                     TimeStepperStatusFailure(
                         reason=str(exc.args[0]),
                         time=accepted_time,
@@ -164,8 +183,7 @@ class TimeStepper:
             time_manager.dt = next_dt
 
             if success:
-                return _log_and_return_time_step_data(
-                    model,
+                return conclude_attempt(
                     TimeStepperStatusSuccess(
                         time=accepted_time,
                         attempts=list(attempts_data),
@@ -174,8 +192,7 @@ class TimeStepper:
             else:
                 # We neither succeeded nor terminated the loop with a failure. So we
                 # continue iterating with the adjusted dt.
-                _ = _log_and_return_time_step_data(
-                    model,
+                _ = conclude_attempt(
                     TimeStepperStatusContinueIterating(
                         attempts=list(attempts_data),
                     ),
