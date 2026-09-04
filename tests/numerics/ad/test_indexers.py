@@ -472,6 +472,36 @@ def test_empty_indices(indexer_type: str):
     np.testing.assert_array_equal(list(grouped["x"].values())[0], [0, 1])
 
 
+class TestEquationOnDomainStr:
+    """Regression tests for `EquationOnDomain.__str__`.
+
+    A failure here most likely means the subdomain/interface branches went dead again:
+    the subdomain branch previously checked `isinstance(domain, pp.Domain)`, an
+    unrelated geometry-description class that no `pp.Grid` is ever an instance of, so
+    it always fell through to the "unknown domain" case; separately, its format string
+    was missing the `f`-prefix, so even if reachable it would not have substituted
+    `self.name`/`domain.id`.
+
+    """
+
+    def test_subdomain(self) -> None:
+        domain = pp.CartGrid([3])
+        result = str(pp.ad.EquationOnDomain("mass_balance", domain))
+        assert result == (
+            f"Equation mass_balance on subdomain(id={domain.id}, dim={domain.dim})"
+        )
+
+    def test_interface(self) -> None:
+        subdomain = pp.CartGrid([3])
+        subdomain.compute_geometry()
+        interface = pp.MortarGrid(subdomain.dim, {0: subdomain, 1: subdomain})
+        result = str(pp.ad.EquationOnDomain("interface_force_balance", interface))
+        assert result == (
+            f"Equation interface_force_balance on interface(id={interface.id}, "
+            f"dim={interface.dim}, codim={interface.codim})"
+        )
+
+
 class TestDofToCell:
     """Unit tests for `dof_to_cell`.
 
