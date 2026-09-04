@@ -23,7 +23,11 @@ from porepy.numerics.solvers.convergence_check import (
     ConvergenceStatusCollection,
 )
 from porepy.numerics.solvers.equation_variable_tags import EquationTag, VariableTag
-from porepy.numerics.solvers.linear_solvers.linear_solver import LinearSolverStatus
+from porepy.numerics.solvers.linear_solvers.linear_solver import (
+    LinearSolverStatus,
+    LinearSolverStatusFailure,
+    LinearSolverStatusSuccess,
+)
 
 # Reuses the numpy-aware JSON encoder SolverStatistics already relies on, rather than
 # reimplementing it. This module is imported last by porepy.numerics.solvers.__init__
@@ -43,6 +47,7 @@ __all__ = [
     "JSONLWriter",
     "read_jsonl_records",
     "validate_record",
+    "NonlinearTelemetryRecorder",
 ]
 
 
@@ -357,3 +362,207 @@ def _validate_run_record(record: dict[str, Any]) -> None:
         raise ValueError("pp_solvers_commit must be a str or None.")
     if not isinstance(record["config_hash"], str):
         raise ValueError("config_hash must be a str.")
+
+
+class NonlinearTelemetryRecorder:
+    """Concrete `NonlinearIterationRecorder`, writing JSONL to `config.output_path`.
+
+    Physics-agnostic: relies only on the equation block structure every PorePy model
+    exposes through `EquationOnDomain`/`EquationIndexer`. This first implementation
+    covers the raw per-block residual fields (L-inf norm, reduction factor, argmax
+    cell location) plus linear-solver status; duck-typed fields (line-search
+    telemetry, contact-state counts, admissibility counts) and level-2 spatial fields
+    are added by later commits -- constructing this recorder for a model that doesn't
+    expose those hooks simply leaves the corresponding record fields absent for now.
+
+    Parameters:
+        config: Telemetry configuration.
+
+    """
+
+    def __init__(self, config: TelemetryConfig) -> None:
+        self.config = config
+        """Telemetry configuration."""
+        self._writer = JSONLWriter(config.output_path)
+        self._previous_block_residual_norms: dict[str, float] = {}
+
+    def before_nonlinear_loop(self, model: pp.PorePyModel) -> None:
+        """Reset the previous-iteration residual norms used for reduction factors."""
+        self._previous_block_residual_norms = {}
+
+    def record_iteration(
+        self,
+        model: pp.PorePyModel,
+        iteration_index: int,
+        nonlinear_increment: np.ndarray,
+        residual: np.ndarray,
+        equation_indexer: pp.ad.EquationIndexer,
+        linear_solver_status: LinearSolverStatus,
+        convergence_status: ConvergenceStatusCollection,
+        divergence_status: ConvergenceStatusCollection,
+        convergence_info: ConvergenceInfoCollection,
+    ) -> None:
+        """Write one "iteration" record. See `NonlinearIterationRecorder`."""
+        if self.config.verbosity == 0:
+            return
+        self._writer.write_record(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "record_type": "iteration",
+                "iteration_index": iteration_index,
+                "convergence_status": _stringify_status(convergence_status),
+                "divergence_status": _stringify_status(divergence_status),
+                "convergence_info": dict(convergence_info),
+                "linear_solver": _linear_solver_fields(linear_solver_status),
+                "blocks": self._block_residual_fields(
+                    model, residual, equation_indexer
+                ),
+            }
+        )
+
+    def record_outer_iteration(
+        self,
+        model: pp.PorePyModel,
+        iteration_index: int,
+        nonlinear_increment: np.ndarray,
+        full_residual: np.ndarray,
+        equation_indexer: pp.ad.EquationIndexer,
+        convergence_status: ConvergenceStatusCollection,
+        divergence_status: ConvergenceStatusCollection,
+        convergence_info: ConvergenceInfoCollection,
+    ) -> None:
+        """Write one "outer_iteration" record. See `NonlinearIterationRecorder`."""
+        if self.config.verbosity == 0:
+            return
+        self._writer.write_record(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "record_type": "outer_iteration",
+                "iteration_index": iteration_index,
+                "convergence_status": _stringify_status(convergence_status),
+                "divergence_status": _stringify_status(divergence_status),
+                "convergence_info": dict(convergence_info),
+                "blocks": self._block_residual_fields(
+                    model, full_residual, equation_indexer
+                ),
+            }
+        )
+
+    def record_time_step(
+        self, model: pp.PorePyModel, time_step_status: TimeStepperStatus
+    ) -> None:
+        """Write one "time_step" record. See `NonlinearIterationRecorder`."""
+        if self.config.verbosity == 0:
+            return
+        record: dict[str, Any] = {
+            "schema_version": SCHEMA_VERSION,
+            "record_type": "time_step",
+            "status": time_step_status.serialize(),
+        }
+        # Duck-typed: TimeStepperStatus's three subclasses each carry a different
+        # subset of these fields, none declared on the (never-subclassed-elsewhere)
+        # abstract base.
+        for optional_field in ("dt", "time", "reason"):
+            value = getattr(time_step_status, optional_field, None)
+            if value is not None:
+                record[optional_field] = value
+        attempts = getattr(time_step_status, "attempts", None)
+        if attempts:
+            record["num_attempts"] = len(attempts)
+            record["nonlinear_solver_status"] = attempts[
+                -1
+            ].nonlinear_solve_status.serialize()
+        self._writer.write_record(record)
+
+    def _block_residual_fields(
+        self,
+        model: pp.PorePyModel,
+        residual: np.ndarray,
+        equation_indexer: pp.ad.EquationIndexer,
+    ) -> dict[str, dict[str, Any]]:
+        """Per-equation-block residual telemetry: L-inf norm, reduction factor, and
+        the cell location of the largest-magnitude entry.
+
+        """
+        if self.config.equation_tags:
+            selected, _ = equation_indexer.filter_by_tags(
+                tags=self.config.equation_tags, model=model
+            )
+            selected_equations = set(selected)
+        else:
+            selected_equations = set(equation_indexer.indices)
+
+        domains_by_name: dict[str, dict[pp.GridLike, np.ndarray]] = {}
+        for equation, indices in equation_indexer.indices.items():
+            if equation not in selected_equations or indices.size == 0:
+                continue
+            domains_by_name.setdefault(equation.name, {})[equation.domain] = indices
+
+        fields: dict[str, dict[str, Any]] = {}
+        for name, domains_to_indices in domains_by_name.items():
+            block_indices = np.concatenate(list(domains_to_indices.values()))
+            block_residual = residual[block_indices]
+            norm = float(np.max(np.abs(block_residual)))
+
+            previous_norm = self._previous_block_residual_norms.get(name)
+            reduction_factor = (
+                norm / previous_norm
+                if previous_norm is not None and previous_norm != 0.0
+                else None
+            )
+            self._previous_block_residual_norms[name] = norm
+
+            fields[name] = {
+                "residual_inf_norm": norm,
+                "reduction_factor": reduction_factor,
+                "argmax_location": self._argmax_location(
+                    model, name, domains_to_indices, block_residual
+                ),
+            }
+        return fields
+
+    def _argmax_location(
+        self,
+        model: pp.PorePyModel,
+        name: str,
+        domains_to_indices: dict[pp.GridLike, np.ndarray],
+        block_residual: np.ndarray,
+    ) -> dict[str, Any] | None:
+        """Locate the largest-magnitude entry of one block's residual, as a cell.
+
+        `None` if this equation isn't cell-centered (e.g. defined on faces/nodes),
+        since `pp.ad.dof_to_cell` doesn't apply then.
+
+        """
+        num_components = model.equation_system.equations[name].target.dof_info.cells
+        if num_components <= 0:
+            return None
+
+        argmax_local = int(np.argmax(np.abs(block_residual)))
+        offset = 0
+        for domain, indices in domains_to_indices.items():
+            if argmax_local < offset + indices.size:
+                local_in_domain = argmax_local - offset
+                return {
+                    "dim": domain.dim,
+                    "domain_id": domain.id,
+                    "cell": pp.ad.dof_to_cell(local_in_domain, domain, num_components),
+                }
+            offset += indices.size
+        raise AssertionError(
+            "argmax index not found in any domain; block_indices/domains_to_indices "
+            "are inconsistent."
+        )
+
+
+def _stringify_status(status: ConvergenceStatusCollection) -> dict[str, str]:
+    return {key: str(value) for key, value in status.items()}
+
+
+def _linear_solver_fields(status: LinearSolverStatus) -> dict[str, Any]:
+    if isinstance(status, LinearSolverStatusSuccess):
+        return {"success": True, "solve_time": status.solve_time}
+    assert isinstance(status, LinearSolverStatusFailure), (
+        "LinearSolverStatus is documented as a closed enum of two cases."
+    )
+    return {"success": False, "reason": status.reason}

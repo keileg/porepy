@@ -1,9 +1,10 @@
 """Unit tests for the telemetry configuration, recording interface, and JSONL I/O.
 
-No live model is used: `TelemetryConfig` is exercised directly,
-`NonlinearIterationRecorder` conformance is checked against hand-built fake recorders
-and hand-built fake convergence/linear-solver/time-step objects, and `JSONLWriter`/
-`read_jsonl_records`/`validate_record` are exercised against hand-built records.
+`TelemetryConfig`, the `NonlinearIterationRecorder` interface, and `JSONLWriter`/
+`read_jsonl_records`/`validate_record` are exercised against hand-built fakes, no live
+model needed. `NonlinearTelemetryRecorder`, the concrete recorder, needs a real
+`EquationSystem` to slice residuals against, so its tests use a small fixture model
+(`SinglePhaseFlow`) instead.
 
 """
 
@@ -14,12 +15,14 @@ import numpy as np
 import pytest
 
 import porepy as pp
+from porepy.models.fluid_mass_balance import SinglePhaseFlow
 from porepy.numerics.solvers.convergence_check import (
     ConvergenceInfoCollection,
     ConvergenceStatus,
     ConvergenceStatusCollection,
 )
 from porepy.numerics.solvers.linear_solvers.linear_solver import (
+    LinearSolverStatusFailure,
     LinearSolverStatusSuccess,
 )
 from porepy.numerics.solvers.newton_solver import NewtonSolverConverged
@@ -27,12 +30,15 @@ from porepy.numerics.solvers.telemetry import (
     SCHEMA_VERSION,
     JSONLWriter,
     NonlinearIterationRecorder,
+    NonlinearTelemetryRecorder,
     TelemetryConfig,
     read_jsonl_records,
     validate_record,
 )
 from porepy.time_stepper.time_step_status import (
     TimeStepperAttemptData,
+    TimeStepperStatusContinueIterating,
+    TimeStepperStatusFailure,
     TimeStepperStatusSuccess,
 )
 
@@ -296,6 +302,18 @@ class TestNonlinearIterationRecorderInvocation:
         assert recorder.calls == [("before_nonlinear_loop", (model,))]
 
 
+def _converged_attempt(dt: float = 1.0) -> TimeStepperAttemptData:
+    """One successful time-step attempt, as the TimeStepper records it."""
+    return TimeStepperAttemptData(
+        dt=dt,
+        nonlinear_solve_status=NewtonSolverConverged(
+            linear_solver_statuses=[],
+            convergence_statuses=ConvergenceStatusCollection(),
+            divergence_statuses=ConvergenceStatusCollection(),
+        ),
+    )
+
+
 def _run_record(**overrides) -> dict:
     """A minimal, valid "run" record, for tests to override fields on."""
     record = {
@@ -440,3 +458,313 @@ class TestValidateRecord:
         validate_record(
             {"schema_version": SCHEMA_VERSION, "record_type": "not_yet_implemented"}
         )
+
+
+def _prepared_model() -> pp.PorePyModel:
+    """A small, prepared model with exactly one equation block: `mass_balance_equation`
+    on a single 2x2 Cartesian subdomain (4 cells), so per-block telemetry has exactly
+    one block to reason about.
+
+    """
+    model = SinglePhaseFlow({"times_to_export": []})
+    model.prepare_simulation()
+    return model
+
+
+def _perturb_pressure(model: pp.PorePyModel) -> None:
+    """Give the model a non-uniform state, so the residual isn't trivially zero/tied."""
+    pressure = model.pressure(model.mdg.subdomains())
+    model.equation_system.set_variable_values(
+        np.array([1.0, 2.0, 5.0, 0.5]),
+        variables=[pressure],
+        iterate_index=0,
+        additive=False,
+    )
+
+
+def _full_residual_and_indexer(
+    model: pp.PorePyModel,
+) -> tuple[np.ndarray, pp.ad.EquationIndexer]:
+    """The full-system residual and its (already-matching) equation indexer."""
+    residual = model.equation_system.assemble(evaluate_jacobian=False)
+    return residual, model.equation_system.equation_indexer
+
+
+class TestNonlinearTelemetryRecorder:
+    """Tests for the concrete recorder, against a small fixture model.
+
+    A failure here most likely means either the per-block residual math (L-inf norm,
+    reduction factor, argmax cell location) is wrong, or a record no longer matches
+    what `.claude/solver-telemetry/schema.md` documents for the "iteration"/
+    "outer_iteration"/"time_step" record types.
+
+    """
+
+    @staticmethod
+    def _recorder(tmp_path: Path, **config_overrides) -> NonlinearTelemetryRecorder:
+        config = TelemetryConfig(
+            output_path=tmp_path / "telemetry.jsonl", **config_overrides
+        )
+        return NonlinearTelemetryRecorder(config)
+
+    def test_record_iteration_writes_expected_block_fields(
+        self, tmp_path: Path
+    ) -> None:
+        model = _prepared_model()
+        _perturb_pressure(model)
+        residual, equation_indexer = _full_residual_and_indexer(model)
+        recorder = self._recorder(tmp_path)
+
+        recorder.record_iteration(
+            model=model,
+            iteration_index=1,
+            nonlinear_increment=np.zeros_like(residual),
+            residual=residual,
+            equation_indexer=equation_indexer,
+            linear_solver_status=LinearSolverStatusSuccess(solve_time=0.02),
+            convergence_status=ConvergenceStatusCollection(
+                {"res_abs": ConvergenceStatus.CONTINUE_ITERATING}
+            ),
+            divergence_status=ConvergenceStatusCollection(),
+            convergence_info={"res_abs": {"norm": 1.0e-3}},
+        )
+
+        [record] = read_jsonl_records(tmp_path / "telemetry.jsonl")
+        validate_record(record)
+        assert record["record_type"] == "iteration"
+        assert record["iteration_index"] == 1
+        assert record["linear_solver"] == {"success": True, "solve_time": 0.02}
+        assert record["convergence_status"] == {"res_abs": "continue_iterating"}
+        assert record["convergence_info"] == {"res_abs": {"norm": 1.0e-3}}
+
+        assert list(record["blocks"]) == ["mass_balance_equation"]
+        block = record["blocks"]["mass_balance_equation"]
+        expected_cell = int(np.argmax(np.abs(residual)))
+        assert block["residual_inf_norm"] == pytest.approx(
+            float(np.max(np.abs(residual)))
+        )
+        assert block["reduction_factor"] is None  # Nothing to divide by yet.
+        subdomain = model.mdg.subdomains()[0]
+        assert block["argmax_location"] == {
+            "dim": subdomain.dim,
+            "domain_id": subdomain.id,
+            "cell": expected_cell,
+        }
+
+    def test_reduction_factor_uses_previous_iteration(self, tmp_path: Path) -> None:
+        model = _prepared_model()
+        _perturb_pressure(model)
+        recorder = self._recorder(tmp_path)
+
+        def record(residual: np.ndarray, iteration_index: int) -> None:
+            recorder.record_iteration(
+                model=model,
+                iteration_index=iteration_index,
+                nonlinear_increment=np.zeros_like(residual),
+                residual=residual,
+                equation_indexer=model.equation_system.equation_indexer,
+                linear_solver_status=LinearSolverStatusSuccess(solve_time=0.0),
+                convergence_status=ConvergenceStatusCollection(),
+                divergence_status=ConvergenceStatusCollection(),
+                convergence_info={},
+            )
+
+        record(np.array([1.0, -2.0, 4.0, 0.0]), iteration_index=1)  # inf-norm 4.0
+        record(np.array([1.0, -1.0, 2.0, 0.0]), iteration_index=2)  # inf-norm 2.0
+
+        records = read_jsonl_records(tmp_path / "telemetry.jsonl")
+        assert records[0]["blocks"]["mass_balance_equation"]["reduction_factor"] is None
+        assert records[1]["blocks"]["mass_balance_equation"][
+            "reduction_factor"
+        ] == pytest.approx(0.5)
+
+    def test_before_nonlinear_loop_resets_reduction_factor_state(
+        self, tmp_path: Path
+    ) -> None:
+        model = _prepared_model()
+        _perturb_pressure(model)
+        residual, equation_indexer = _full_residual_and_indexer(model)
+        recorder = self._recorder(tmp_path)
+
+        recorder.record_iteration(
+            model=model,
+            iteration_index=1,
+            nonlinear_increment=np.zeros_like(residual),
+            residual=residual,
+            equation_indexer=equation_indexer,
+            linear_solver_status=LinearSolverStatusSuccess(solve_time=0.0),
+            convergence_status=ConvergenceStatusCollection(),
+            divergence_status=ConvergenceStatusCollection(),
+            convergence_info={},
+        )
+        recorder.before_nonlinear_loop(model)
+        recorder.record_iteration(
+            model=model,
+            iteration_index=1,
+            nonlinear_increment=np.zeros_like(residual),
+            residual=residual,
+            equation_indexer=equation_indexer,
+            linear_solver_status=LinearSolverStatusSuccess(solve_time=0.0),
+            convergence_status=ConvergenceStatusCollection(),
+            divergence_status=ConvergenceStatusCollection(),
+            convergence_info={},
+        )
+
+        records = read_jsonl_records(tmp_path / "telemetry.jsonl")
+        for record in records:
+            assert record["blocks"]["mass_balance_equation"]["reduction_factor"] is None
+
+    def test_verbosity_zero_disables_recording(self, tmp_path: Path) -> None:
+        model = _prepared_model()
+        residual, equation_indexer = _full_residual_and_indexer(model)
+        recorder = self._recorder(tmp_path, verbosity=0)
+
+        recorder.record_iteration(
+            model=model,
+            iteration_index=1,
+            nonlinear_increment=np.zeros_like(residual),
+            residual=residual,
+            equation_indexer=equation_indexer,
+            linear_solver_status=LinearSolverStatusSuccess(solve_time=0.0),
+            convergence_status=ConvergenceStatusCollection(),
+            divergence_status=ConvergenceStatusCollection(),
+            convergence_info={},
+        )
+        recorder.record_outer_iteration(
+            model=model,
+            iteration_index=1,
+            nonlinear_increment=np.zeros_like(residual),
+            full_residual=residual,
+            equation_indexer=equation_indexer,
+            convergence_status=ConvergenceStatusCollection(),
+            divergence_status=ConvergenceStatusCollection(),
+            convergence_info={},
+        )
+        recorder.record_time_step(
+            model=model,
+            time_step_status=TimeStepperStatusSuccess(
+                time=1.0, attempts=[_converged_attempt()]
+            ),
+        )
+
+        assert (
+            not (tmp_path / "telemetry.jsonl").exists()
+            or read_jsonl_records(tmp_path / "telemetry.jsonl") == []
+        )
+
+    def test_equation_tags_restrict_recorded_blocks(self, tmp_path: Path) -> None:
+        model = _prepared_model()
+        residual, equation_indexer = _full_residual_and_indexer(model)
+        recorder = self._recorder(
+            tmp_path,
+            equation_tags=[pp.solvers.EquationTag(name="not_a_real_equation")],
+        )
+
+        recorder.record_iteration(
+            model=model,
+            iteration_index=1,
+            nonlinear_increment=np.zeros_like(residual),
+            residual=residual,
+            equation_indexer=equation_indexer,
+            linear_solver_status=LinearSolverStatusSuccess(solve_time=0.0),
+            convergence_status=ConvergenceStatusCollection(),
+            divergence_status=ConvergenceStatusCollection(),
+            convergence_info={},
+        )
+
+        [record] = read_jsonl_records(tmp_path / "telemetry.jsonl")
+        assert record["blocks"] == {}
+
+    def test_record_outer_iteration_writes_block_fields(self, tmp_path: Path) -> None:
+        model = _prepared_model()
+        _perturb_pressure(model)
+        residual, equation_indexer = _full_residual_and_indexer(model)
+        recorder = self._recorder(tmp_path)
+
+        recorder.record_outer_iteration(
+            model=model,
+            iteration_index=3,
+            nonlinear_increment=np.zeros_like(residual),
+            full_residual=residual,
+            equation_indexer=equation_indexer,
+            convergence_status=ConvergenceStatusCollection(
+                {"res_abs": ConvergenceStatus.CONVERGED}
+            ),
+            divergence_status=ConvergenceStatusCollection(),
+            convergence_info={"res_abs": {"norm": 1.0e-11}},
+        )
+
+        [record] = read_jsonl_records(tmp_path / "telemetry.jsonl")
+        validate_record(record)
+        assert record["record_type"] == "outer_iteration"
+        assert record["iteration_index"] == 3
+        assert list(record["blocks"]) == ["mass_balance_equation"]
+
+    @pytest.mark.parametrize(
+        "time_step_status,expected_fields",
+        [
+            (
+                lambda: TimeStepperStatusSuccess(
+                    time=1.5, attempts=[_converged_attempt(dt=0.5)]
+                ),
+                {
+                    "status": "successful",
+                    "dt": 0.5,
+                    "time": 1.5,
+                    "num_attempts": 1,
+                    "nonlinear_solver_status": "successful",
+                },
+            ),
+            (
+                lambda: TimeStepperStatusFailure(
+                    reason="dt below minimum",
+                    time=1.5,
+                    attempts=[_converged_attempt(dt=0.5)],
+                ),
+                {"status": "failed", "reason": "dt below minimum", "num_attempts": 1},
+            ),
+            (
+                lambda: TimeStepperStatusContinueIterating(
+                    attempts=[_converged_attempt(), _converged_attempt()]
+                ),
+                {"status": "in_progress", "num_attempts": 2},
+            ),
+        ],
+        ids=["success", "failure", "continue_iterating"],
+    )
+    def test_record_time_step(
+        self, tmp_path: Path, time_step_status, expected_fields: dict
+    ) -> None:
+        model = _prepared_model()
+        recorder = self._recorder(tmp_path)
+
+        recorder.record_time_step(model=model, time_step_status=time_step_status())
+
+        [record] = read_jsonl_records(tmp_path / "telemetry.jsonl")
+        validate_record(record)
+        assert record["record_type"] == "time_step"
+        for key, value in expected_fields.items():
+            assert record[key] == value
+
+    def test_linear_solver_failure_is_recorded(self, tmp_path: Path) -> None:
+        model = _prepared_model()
+        residual, equation_indexer = _full_residual_and_indexer(model)
+        recorder = self._recorder(tmp_path)
+
+        recorder.record_iteration(
+            model=model,
+            iteration_index=1,
+            nonlinear_increment=np.zeros_like(residual),
+            residual=residual,
+            equation_indexer=equation_indexer,
+            linear_solver_status=LinearSolverStatusFailure(reason="singular matrix"),
+            convergence_status=ConvergenceStatusCollection(),
+            divergence_status=ConvergenceStatusCollection(),
+            convergence_info={},
+        )
+
+        [record] = read_jsonl_records(tmp_path / "telemetry.jsonl")
+        assert record["linear_solver"] == {
+            "success": False,
+            "reason": "singular matrix",
+        }
