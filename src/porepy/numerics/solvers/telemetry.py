@@ -237,6 +237,16 @@ iteration, per-outer-iteration, per-time-step) are added here, and validated by
 
 """
 
+_DEFAULT_CONSTRAINT_VIOLATION_TOLERANCE = 0.3
+"""Fallback when a model doesn't set `params["constraint_violation_tolerance"]`.
+
+Matches `ConstraintLineSearch.constraint_weights`'s own default (`line_search.py:744`):
+`NonlinearTelemetryRecorder` reuses this same model parameter for its contact-state
+near-transition counts, so the two agree on what counts as "close to a sign change" for
+the same two indicator functions.
+
+"""
+
 
 class JSONLWriter:
     """Append-only writer for a telemetry record stream, one JSON object per line.
@@ -367,14 +377,16 @@ def _validate_run_record(record: dict[str, Any]) -> None:
 class NonlinearTelemetryRecorder:
     """Concrete `NonlinearIterationRecorder`, writing JSONL to `config.output_path`.
 
-    Physics-agnostic: relies only on the equation/variable block structure every
-    PorePy model exposes through `EquationOnDomain`/`Variable`/`EquationIndexer`.
-    Covers the raw per-block residual fields (L-inf norm, reduction factor, argmax
-    cell location), linear-solver status, and admissibility counts (config-declared
-    bounds, pure counting). Duck-typed fields specific to contact mechanics
-    (line-search telemetry, contact-state counts) and level-2 spatial fields are
-    added by later commits -- constructing this recorder for a model that doesn't
-    expose those hooks simply leaves the corresponding record fields absent for now.
+    Covers the raw per-block residual fields (L-inf norm, reduction factor, argmax cell
+    location; relies only on the equation/variable block structure every PorePy model
+    exposes through `EquationOnDomain`/`Variable`/`EquationIndexer`), linear-solver
+    status, admissibility counts (config-declared bounds, pure counting), and two
+    duck-typed fields specific to contact-mechanics models: contact-state counts
+    (`ContactIndicators`) and line-search telemetry (`ConstraintLineSearch`'s
+    `constraint_weights` side channel). Constructing this recorder for a model that
+    doesn't expose one of these hooks simply leaves the corresponding record field
+    `null`/absent, rather than raising. Level-2 spatial fields (`.npz` sidecar) are
+    added by a later commit.
 
     Parameters:
         config: Telemetry configuration.
@@ -419,6 +431,8 @@ class NonlinearTelemetryRecorder:
                     model, residual, equation_indexer
                 ),
                 "admissibility": self._admissibility_counts(model),
+                "contact_state": self._contact_state_counts(model),
+                "line_search": self._line_search_fields(model),
             }
         )
 
@@ -587,6 +601,72 @@ class NonlinearTelemetryRecorder:
                 "num_total": int(values.size),
             }
         return counts
+
+    def _contact_state_counts(self, model: pp.PorePyModel) -> dict[str, int] | None:
+        """Duck-typed contact-state counts: how many fracture cells are open,
+        sticking, or slipping.
+
+        `None` if the model doesn't expose `opening_indicator`/`sliding_indicator`
+        (`ContactIndicators`, or an equivalent) or has no fracture subdomains.
+
+        Sign convention follows `ContactIndicators.opening_indicator`/
+        `sliding_indicator` directly: negative opening indicator means open,
+        negative sliding indicator means sticking. `num_near_*_transition` additionally
+        counts cells within `params["constraint_violation_tolerance"]` (default `3e-1`,
+        the same model parameter `ConstraintLineSearch.constraint_weights` already uses
+        for these same two indicators, `line_search.py:744`) of a sign change, without
+        changing which side of zero a cell is classified on -- a diagnostic on top of
+        the classification, not a redefinition of it.
+
+        """
+        if not (
+            hasattr(model, "opening_indicator") and hasattr(model, "sliding_indicator")
+        ):
+            return None
+        fracture_subdomains = model.mdg.subdomains(dim=model.nd - 1)
+        if not fracture_subdomains:
+            return None
+
+        opening = model.equation_system.evaluate(
+            model.opening_indicator(fracture_subdomains)
+        )
+        sliding = model.equation_system.evaluate(
+            model.sliding_indicator(fracture_subdomains)
+        )
+        tolerance = model.params.get(
+            "constraint_violation_tolerance", _DEFAULT_CONSTRAINT_VIOLATION_TOLERANCE
+        )
+
+        is_open = opening < 0
+        is_slip = ~is_open & (sliding >= 0)
+        is_stick = ~is_open & ~is_slip
+
+        return {
+            "num_open": int(np.sum(is_open)),
+            "num_stick": int(np.sum(is_stick)),
+            "num_slip": int(np.sum(is_slip)),
+            "num_total": int(opening.size),
+            "num_near_opening_transition": int(np.sum(np.abs(opening) < tolerance)),
+            "num_near_sliding_transition": int(np.sum(np.abs(sliding) < tolerance)),
+        }
+
+    def _line_search_fields(self, model: pp.PorePyModel) -> dict[str, float] | None:
+        """Duck-typed line-search telemetry: the accepted step's relaxation factor.
+
+        `None` if the model has no `constraint_weights` in its subdomain data, i.e.
+        this solve isn't using `ConstraintLineSearch`. Per the discovery report, "alpha"
+        is the accepted per-DOF relaxation vector reduced to a scalar (its min) --
+        not read off the solver as a single existing float, since none exists.
+
+        """
+        weight_arrays = [
+            model.mdg.subdomain_data(sd)["constraint_weights"]
+            for sd in model.mdg.subdomains()
+            if "constraint_weights" in model.mdg.subdomain_data(sd)
+        ]
+        if not weight_arrays:
+            return None
+        return {"alpha": float(min(np.min(weights) for weights in weight_arrays))}
 
 
 def _stringify_status(status: ConvergenceStatusCollection) -> dict[str, str]:

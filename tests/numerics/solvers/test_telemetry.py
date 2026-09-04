@@ -4,7 +4,8 @@
 `read_jsonl_records`/`validate_record` are exercised against hand-built fakes, no live
 model needed. `NonlinearTelemetryRecorder`, the concrete recorder, needs a real
 `EquationSystem` to slice residuals against, so its tests use a small fixture model
-(`SinglePhaseFlow`) instead.
+(`SinglePhaseFlow`) instead; its two contact-mechanics duck-typed fields need a model
+with a fracture (`SquareDomainOrthogonalFractures` + `pp.MomentumBalance`).
 
 """
 
@@ -15,6 +16,9 @@ import numpy as np
 import pytest
 
 import porepy as pp
+from porepy.applications.md_grids.model_geometries import (
+    SquareDomainOrthogonalFractures,
+)
 from porepy.models.fluid_mass_balance import SinglePhaseFlow
 from porepy.numerics.solvers.convergence_check import (
     ConvergenceInfoCollection,
@@ -864,3 +868,168 @@ class TestNonlinearTelemetryRecorder:
                 divergence_status=ConvergenceStatusCollection(),
                 convergence_info={},
             )
+
+
+def _cell_array(values: np.ndarray, subdomains: list[pp.Grid]) -> pp.ad.DenseArray:
+    """Wrap one value per cell of the given subdomains as an Ad array."""
+    space = pp.ad.OperatorSpace.from_domains(subdomains, {pp.ad.GridEntity.cells: 1})
+    return pp.ad.DenseArray(values, source=space, target=space)
+
+
+def _fixed_indicator_model(
+    opening_values: np.ndarray, sliding_values: np.ndarray, **params
+) -> pp.PorePyModel:
+    """A prepared, fractured contact-mechanics model whose opening/sliding indicators
+    are hard-coded to the given arrays, for controlled testing of contact-state
+    counting -- following the same pattern `tests/numerics/solvers/test_line_search.py`
+    uses to test `ConstraintLineSearch` without depending on `ContactIndicators`'s real
+    (traction/gap-based) computation.
+
+    """
+
+    class FixedIndicators:
+        def opening_indicator(self, subdomains: list[pp.Grid]) -> pp.ad.Operator:
+            return _cell_array(opening_values, subdomains)
+
+        def sliding_indicator(self, subdomains: list[pp.Grid]) -> pp.ad.Operator:
+            return _cell_array(sliding_values, subdomains)
+
+    class Model(SquareDomainOrthogonalFractures, pp.MomentumBalance, FixedIndicators):
+        """One vertical fracture -> 2 fracture cells by default."""
+
+    model = Model({"times_to_export": [], **params})
+    model.prepare_simulation()
+    return model
+
+
+def _record_bare_iteration(
+    recorder: NonlinearTelemetryRecorder, model: pp.PorePyModel
+) -> dict:
+    """Call `record_iteration` with everything except `model` at its simplest, and
+    return the one record written.
+
+    """
+    residual, equation_indexer = _full_residual_and_indexer(model)
+    recorder.record_iteration(
+        model=model,
+        iteration_index=1,
+        nonlinear_increment=np.zeros_like(residual),
+        residual=residual,
+        equation_indexer=equation_indexer,
+        linear_solver_status=LinearSolverStatusSuccess(solve_time=0.0),
+        convergence_status=ConvergenceStatusCollection(),
+        divergence_status=ConvergenceStatusCollection(),
+        convergence_info={},
+    )
+    [record] = read_jsonl_records(recorder.config.output_path)
+    return record
+
+
+class TestContactStateCounts:
+    """Tests for the duck-typed `contact_state` field.
+
+    A failure here most likely means either the sign convention no longer matches
+    `ContactIndicators.opening_indicator`/`sliding_indicator`'s own documented
+    convention (negative opening = open, negative sliding = sticking), or the
+    near-transition tolerance no longer agrees with what
+    `ConstraintLineSearch.constraint_weights` treats as close to a sign change for the
+    same two indicators.
+
+    """
+
+    def test_none_for_a_model_without_contact_indicators(self, tmp_path: Path) -> None:
+        model = _prepared_model()  # SinglePhaseFlow: no fractures, no indicators.
+        config = TelemetryConfig(output_path=tmp_path / "telemetry.jsonl")
+        recorder = NonlinearTelemetryRecorder(config)
+
+        record = _record_bare_iteration(recorder, model)
+
+        assert record["contact_state"] is None
+
+    def test_open_and_stick_counts(self, tmp_path: Path) -> None:
+        # Cell 0: opening < 0 -> open. Cell 1: opening > 0, sliding < 0 -> stick.
+        model = _fixed_indicator_model(
+            opening_values=np.array([-0.9, 0.9]),
+            sliding_values=np.array([0.0, -0.9]),
+        )
+        config = TelemetryConfig(output_path=tmp_path / "telemetry.jsonl")
+        recorder = NonlinearTelemetryRecorder(config)
+
+        record = _record_bare_iteration(recorder, model)
+
+        assert record["contact_state"]["num_open"] == 1
+        assert record["contact_state"]["num_stick"] == 1
+        assert record["contact_state"]["num_slip"] == 0
+        assert record["contact_state"]["num_total"] == 2
+
+    def test_slip_count(self, tmp_path: Path) -> None:
+        # Both cells closed (opening > 0); both sliding (sliding >= 0) -> slip.
+        model = _fixed_indicator_model(
+            opening_values=np.array([0.9, 0.9]),
+            sliding_values=np.array([0.1, 0.2]),
+        )
+        config = TelemetryConfig(output_path=tmp_path / "telemetry.jsonl")
+        recorder = NonlinearTelemetryRecorder(config)
+
+        record = _record_bare_iteration(recorder, model)
+
+        assert record["contact_state"]["num_open"] == 0
+        assert record["contact_state"]["num_stick"] == 0
+        assert record["contact_state"]["num_slip"] == 2
+
+    def test_near_transition_counts_use_default_tolerance(self, tmp_path: Path) -> None:
+        # 0.2 < default tolerance (0.3): near the opening transition, though still
+        # unambiguously classified as open/stick by the hard-zero sign.
+        model = _fixed_indicator_model(
+            opening_values=np.array([-0.2, 0.9]),
+            sliding_values=np.array([0.0, -0.9]),
+        )
+        config = TelemetryConfig(output_path=tmp_path / "telemetry.jsonl")
+        recorder = NonlinearTelemetryRecorder(config)
+
+        record = _record_bare_iteration(recorder, model)
+
+        assert record["contact_state"]["num_open"] == 1  # Classification unaffected.
+        assert record["contact_state"]["num_near_opening_transition"] == 1
+
+    def test_near_transition_counts_use_configured_tolerance(
+        self, tmp_path: Path
+    ) -> None:
+        model = _fixed_indicator_model(
+            opening_values=np.array([-0.2, 0.9]),
+            sliding_values=np.array([0.0, -0.9]),
+            constraint_violation_tolerance=0.1,
+        )
+        config = TelemetryConfig(output_path=tmp_path / "telemetry.jsonl")
+        recorder = NonlinearTelemetryRecorder(config)
+
+        record = _record_bare_iteration(recorder, model)
+
+        # 0.2 > the configured tolerance of 0.1: no longer counted as near-transition.
+        assert record["contact_state"]["num_near_opening_transition"] == 0
+
+
+class TestLineSearchFields:
+    """Tests for the duck-typed `line_search` field."""
+
+    def test_none_without_constraint_weights(self, tmp_path: Path) -> None:
+        model = _prepared_model()
+        config = TelemetryConfig(output_path=tmp_path / "telemetry.jsonl")
+        recorder = NonlinearTelemetryRecorder(config)
+
+        record = _record_bare_iteration(recorder, model)
+
+        assert record["line_search"] is None
+
+    def test_alpha_is_the_minimum_relaxation_weight(self, tmp_path: Path) -> None:
+        model = _prepared_model()
+        for sd in model.mdg.subdomains():
+            model.mdg.subdomain_data(sd)["constraint_weights"] = np.array(
+                [1.0, 0.4, 0.7, 1.0]
+            )
+        config = TelemetryConfig(output_path=tmp_path / "telemetry.jsonl")
+        recorder = NonlinearTelemetryRecorder(config)
+
+        record = _record_bare_iteration(recorder, model)
+
+        assert record["line_search"] == {"alpha": pytest.approx(0.4)}
