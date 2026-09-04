@@ -1,11 +1,13 @@
-"""Unit tests for `TelemetryConfig` and the `NonlinearIterationRecorder` interface.
+"""Unit tests for the telemetry configuration, recording interface, and JSONL I/O.
 
-No live model is used: `TelemetryConfig` is exercised directly, and
+No live model is used: `TelemetryConfig` is exercised directly,
 `NonlinearIterationRecorder` conformance is checked against hand-built fake recorders
-and hand-built fake convergence/linear-solver/time-step objects.
+and hand-built fake convergence/linear-solver/time-step objects, and `JSONLWriter`/
+`read_jsonl_records`/`validate_record` are exercised against hand-built records.
 
 """
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -22,8 +24,12 @@ from porepy.numerics.solvers.linear_solvers.linear_solver import (
 )
 from porepy.numerics.solvers.newton_solver import NewtonSolverConverged
 from porepy.numerics.solvers.telemetry import (
+    SCHEMA_VERSION,
+    JSONLWriter,
     NonlinearIterationRecorder,
     TelemetryConfig,
+    read_jsonl_records,
+    validate_record,
 )
 from porepy.time_stepper.time_step_status import (
     TimeStepperAttemptData,
@@ -268,3 +274,149 @@ class TestNonlinearIterationRecorderInvocation:
         model = object()
         recorder.before_nonlinear_loop(model)
         assert recorder.calls == [("before_nonlinear_loop", (model,))]
+
+
+def _run_record(**overrides) -> dict:
+    """A minimal, valid "run" record, for tests to override fields on."""
+    record = {
+        "schema_version": SCHEMA_VERSION,
+        "record_type": "run",
+        "porepy_commit": "deadbeef",
+        "pp_solvers_commit": "cafef00d",
+        "config_hash": "abc123",
+    }
+    record.update(overrides)
+    return record
+
+
+class TestJSONLWriter:
+    """Unit tests for `JSONLWriter`, isolated from any real telemetry recorder."""
+
+    def test_write_read_round_trip(self, tmp_path: Path) -> None:
+        path = tmp_path / "telemetry.jsonl"
+        records = [_run_record(config_hash="a"), _run_record(config_hash="b")]
+
+        with JSONLWriter(path) as writer:
+            for record in records:
+                writer.write_record(record)
+
+        assert read_jsonl_records(path) == records
+
+    def test_write_record_supports_numpy_types(self, tmp_path: Path) -> None:
+        path = tmp_path / "telemetry.jsonl"
+        record = _run_record(
+            config_hash="a",
+            extra={"residual": np.array([1.0, 2.0]), "count": np.int64(3)},
+        )
+
+        with JSONLWriter(path) as writer:
+            writer.write_record(record)
+
+        [read_back] = read_jsonl_records(path)
+        assert read_back["extra"]["residual"] == [1.0, 2.0]
+        assert read_back["extra"]["count"] == 3
+
+    def test_each_write_is_flushed_before_the_next(self, tmp_path: Path) -> None:
+        # A crash between two writes must not lose the first: read back what is on
+        # disk after only one write, using a second, independent file handle.
+        path = tmp_path / "telemetry.jsonl"
+        writer = JSONLWriter(path)
+        writer.write_record(_run_record())
+        assert len(read_jsonl_records(path)) == 1
+        writer.close()
+
+
+class TestReadJsonlRecords:
+    """Unit tests for `read_jsonl_records`, in particular truncated-file handling.
+
+    A failure here most likely means a telemetry run killed mid-write (crash,
+    SIGKILL, out-of-memory) would either lose complete records that were already on
+    disk, or make the reader raise instead of tolerating the partial last line.
+
+    """
+
+    def test_truncated_final_line_is_dropped(self, tmp_path: Path) -> None:
+        path = tmp_path / "telemetry.jsonl"
+        complete = [_run_record(config_hash="a"), _run_record(config_hash="b")]
+        with open(path, "w", encoding="utf-8") as f:
+            for record in complete:
+                f.write(json.dumps(record) + "\n")
+            # Simulate being killed mid-write of a third record.
+            f.write('{"schema_version": 1, "record_type": "run", "porepy_com')
+
+        assert read_jsonl_records(path) == complete
+
+    def test_malformed_line_before_the_end_raises(self, tmp_path: Path) -> None:
+        path = tmp_path / "telemetry.jsonl"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('{"schema_version": 1, "record_type": "run", "porepy_com\n')
+            f.write(json.dumps(_run_record()) + "\n")
+
+        with pytest.raises(json.JSONDecodeError):
+            read_jsonl_records(path)
+
+    def test_blank_lines_are_skipped(self, tmp_path: Path) -> None:
+        path = tmp_path / "telemetry.jsonl"
+        record = _run_record()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n\n")
+
+        assert read_jsonl_records(path) == [record]
+
+    def test_empty_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "telemetry.jsonl"
+        path.touch()
+        assert read_jsonl_records(path) == []
+
+
+class TestValidateRecord:
+    """Unit tests for `validate_record`."""
+
+    def test_valid_run_record_passes(self) -> None:
+        validate_record(_run_record())
+
+    def test_valid_run_record_with_none_pp_solvers_commit_passes(self) -> None:
+        validate_record(_run_record(pp_solvers_commit=None))
+
+    @pytest.mark.parametrize("missing_key", ["schema_version", "record_type"])
+    def test_missing_envelope_field_raises(self, missing_key: str) -> None:
+        record = _run_record()
+        del record[missing_key]
+        with pytest.raises(ValueError, match=missing_key):
+            validate_record(record)
+
+    def test_non_int_schema_version_raises(self) -> None:
+        with pytest.raises(ValueError, match="schema_version"):
+            validate_record(_run_record(schema_version="1"))
+
+    def test_newer_schema_version_raises(self) -> None:
+        with pytest.raises(ValueError, match="newer"):
+            validate_record(_run_record(schema_version=SCHEMA_VERSION + 1))
+
+    @pytest.mark.parametrize(
+        "missing_key", ["porepy_commit", "pp_solvers_commit", "config_hash"]
+    )
+    def test_missing_run_field_raises(self, missing_key: str) -> None:
+        record = _run_record()
+        del record[missing_key]
+        with pytest.raises(ValueError, match=missing_key):
+            validate_record(record)
+
+    def test_wrong_type_porepy_commit_raises(self) -> None:
+        with pytest.raises(ValueError, match="porepy_commit"):
+            validate_record(_run_record(porepy_commit=123))
+
+    def test_wrong_type_config_hash_raises(self) -> None:
+        with pytest.raises(ValueError, match="config_hash"):
+            validate_record(_run_record(config_hash=123))
+
+    def test_wrong_type_pp_solvers_commit_raises(self) -> None:
+        with pytest.raises(ValueError, match="pp_solvers_commit"):
+            validate_record(_run_record(pp_solvers_commit=123))
+
+    def test_unknown_record_type_only_checks_envelope(self) -> None:
+        # A record type not yet known to this module (added by a later commit) is
+        # not rejected outright -- only its envelope is checked.
+        validate_record(
+            {"schema_version": SCHEMA_VERSION, "record_type": "not_yet_implemented"}
+        )

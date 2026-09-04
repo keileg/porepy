@@ -9,9 +9,11 @@ so recording must never trigger additional AD evaluation or system assembly.
 
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -23,16 +25,24 @@ from porepy.numerics.solvers.convergence_check import (
 from porepy.numerics.solvers.equation_variable_tags import EquationTag, VariableTag
 from porepy.numerics.solvers.linear_solvers.linear_solver import LinearSolverStatus
 
+# Reuses the numpy-aware JSON encoder SolverStatistics already relies on, rather than
+# reimplementing it. This module is imported last by porepy.numerics.solvers.__init__
+# (see the comment there) specifically so this import is safe: solver_statistics.py
+# pulls in porepy.time_stepper.time_step_status, whose dataclass field annotations are
+# evaluated eagerly against names this package only exposes after its own `import *`
+# lines have run.
+from porepy.viz.solver_statistics import _NumpyJSONEncoder
+
 if TYPE_CHECKING:
-    # Imported only for type checking. porepy.time_stepper.time_step_status imports
-    # porepy.numerics.solvers at module level, so importing it here unconditionally
-    # would be a runtime circular import: this module is itself part of
-    # porepy.numerics.solvers.
     from porepy.time_stepper.time_step_status import TimeStepperStatus
 
 __all__ = [
     "TelemetryConfig",
     "NonlinearIterationRecorder",
+    "SCHEMA_VERSION",
+    "JSONLWriter",
+    "read_jsonl_records",
+    "validate_record",
 ]
 
 
@@ -185,3 +195,149 @@ class NonlinearIterationRecorder(Protocol):
 
         """
         ...
+
+
+SCHEMA_VERSION = 1
+"""Version of the telemetry JSONL record format produced by this module.
+
+Bump on any field addition, removal, or type change to a record this module produces,
+and record the change in `.claude/solver-telemetry/schema.md`. A reader can use a
+record's own `schema_version` field to tell which shape to expect; `validate_record`
+rejects any record whose `schema_version` is newer than this module supports.
+
+"""
+
+_RUN_RECORD_TYPE = "run"
+"""`record_type` value for the once-per-run record (git commits, configuration hash).
+
+See `validate_record`/`.claude/solver-telemetry/schema.md`. Other record types (per-
+iteration, per-outer-iteration, per-time-step) are added here, and validated by
+`validate_record`, as the commits producing them land.
+
+"""
+
+
+class JSONLWriter:
+    """Append-only writer for a telemetry record stream, one JSON object per line.
+
+    Each write is flushed and `fsync`'d immediately, so a killed process leaves every
+    already-written record durable on disk (at worst, the file's last line is a
+    partially-written record; see `read_jsonl_records`).
+
+    Parameters:
+        path: File to append records to. Parent directory must already exist.
+
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        """File this writer appends to."""
+        self._file = open(path, "a", encoding="utf-8")
+
+    def write_record(self, record: dict[str, Any]) -> None:
+        """Append one record to the file.
+
+        Parameters:
+            record: A JSON-serializable mapping. Numpy scalars and arrays are
+                supported (encoded the same way as `SolverStatistics`'s own output).
+
+        """
+        json.dump(record, self._file, cls=_NumpyJSONEncoder)
+        self._file.write("\n")
+        self._file.flush()
+        os.fsync(self._file.fileno())
+
+    def close(self) -> None:
+        """Close the underlying file."""
+        self._file.close()
+
+    def __enter__(self) -> JSONLWriter:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+
+def read_jsonl_records(path: Path) -> list[dict[str, Any]]:
+    """Read a telemetry JSONL file, tolerating a truncated final line.
+
+    A telemetry run may be killed mid-write (crash, out-of-memory, `SIGKILL`); the
+    file's last line can then be a partial JSON object. Every complete line is parsed;
+    a malformed final line is dropped rather than raising. A malformed line anywhere
+    else in the file is not tolerated, since that indicates real corruption rather than
+    an interrupted write.
+
+    Parameters:
+        path: JSONL file to read.
+
+    Returns:
+        One dict per complete line, in file order.
+
+    Raises:
+        json.JSONDecodeError: If a malformed line is found before the last one.
+
+    """
+    with open(path, encoding="utf-8") as f:
+        lines = f.readlines()
+
+    records: list[dict[str, Any]] = []
+    for line_index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            records.append(json.loads(stripped))
+        except json.JSONDecodeError:
+            if line_index == len(lines) - 1:
+                continue
+            raise
+    return records
+
+
+def validate_record(record: dict[str, Any]) -> None:
+    """Validate a telemetry record's envelope, and its fields for known record types.
+
+    Every record type must carry `schema_version` and `record_type`. Beyond that,
+    only the "run" record type (`.claude/solver-telemetry/schema.md`) is validated
+    field-by-field so far; other record types are extended here as the commits
+    producing them land.
+
+    Parameters:
+        record: A single decoded JSONL line.
+
+    Raises:
+        ValueError: If a required envelope field is missing, a known field has the
+            wrong type, or `schema_version` is newer than this module supports.
+
+    """
+    for key in ("schema_version", "record_type"):
+        if key not in record:
+            raise ValueError(f"Telemetry record is missing required field {key!r}.")
+    if not isinstance(record["schema_version"], int):
+        raise ValueError("schema_version must be an int.")
+    if record["schema_version"] > SCHEMA_VERSION:
+        raise ValueError(
+            f"Record schema_version {record['schema_version']} is newer than this "
+            f"module supports ({SCHEMA_VERSION})."
+        )
+    if record["record_type"] == _RUN_RECORD_TYPE:
+        _validate_run_record(record)
+
+
+def _validate_run_record(record: dict[str, Any]) -> None:
+    """Validate the fields specific to a "run" record.
+
+    See `.claude/solver-telemetry/schema.md` for the field-by-field description.
+
+    """
+    for key in ("porepy_commit", "pp_solvers_commit", "config_hash"):
+        if key not in record:
+            raise ValueError(f"Run record is missing required field {key!r}.")
+    if not isinstance(record["porepy_commit"], str):
+        raise ValueError("porepy_commit must be a str.")
+    if record["pp_solvers_commit"] is not None and not isinstance(
+        record["pp_solvers_commit"], str
+    ):
+        raise ValueError("pp_solvers_commit must be a str or None.")
+    if not isinstance(record["config_hash"], str):
+        raise ValueError("config_hash must be a str.")
