@@ -397,11 +397,26 @@ class NonlinearTelemetryRecorder:
         self.config = config
         """Telemetry configuration."""
         self._writer = JSONLWriter(config.output_path)
-        self._previous_block_residual_norms: dict[str, float] = {}
+        # Kept separate, not shared: before_nonlinear_loop fires on *every*
+        # NewtonSolver.solve() call, including each subsolver of a
+        # SequentialNonlinearSolver -- multiple times per outer iteration. Resetting
+        # a single shared dict there would wipe the outer loop's "previous iteration"
+        # state out from under it every time any subsolver starts a fresh inner loop,
+        # even though the same recorder instance is meant to be shared across outer
+        # and inner calls (phase-2-plan.md §1). The inner dict is reset by
+        # before_nonlinear_loop, as its name promises; the outer dict is reset by
+        # record_outer_iteration itself, on that call's own first iteration.
+        self._previous_inner_block_residual_norms: dict[str, float] = {}
+        self._previous_outer_block_residual_norms: dict[str, float] = {}
 
     def before_nonlinear_loop(self, model: pp.PorePyModel) -> None:
-        """Reset the previous-iteration residual norms used for reduction factors."""
-        self._previous_block_residual_norms = {}
+        """Reset the previous-iteration residual norms used for inner reduction
+        factors (`record_iteration`). Called once per `NewtonSolver.solve()`, which
+        for a subsolver of `SequentialNonlinearSolver` is once per outer iteration,
+        not once per outer loop -- see `__init__`.
+
+        """
+        self._previous_inner_block_residual_norms = {}
 
     def record_iteration(
         self,
@@ -428,7 +443,10 @@ class NonlinearTelemetryRecorder:
                 "convergence_info": dict(convergence_info),
                 "linear_solver": _linear_solver_fields(linear_solver_status),
                 "blocks": self._block_residual_fields(
-                    model, residual, equation_indexer
+                    model,
+                    residual,
+                    equation_indexer,
+                    self._previous_inner_block_residual_norms,
                 ),
                 "admissibility": self._admissibility_counts(model),
                 "contact_state": self._contact_state_counts(model),
@@ -447,9 +465,19 @@ class NonlinearTelemetryRecorder:
         divergence_status: ConvergenceStatusCollection,
         convergence_info: ConvergenceInfoCollection,
     ) -> None:
-        """Write one "outer_iteration" record. See `NonlinearIterationRecorder`."""
+        """Write one "outer_iteration" record. See `NonlinearIterationRecorder`.
+
+        Resets the outer reduction-factor state on `iteration_index == 1` (the first
+        outer iteration of a fresh `SequentialNonlinearSolver.solve()` call, matching
+        the off-by-one `iteration_index + 1` convention already used there) instead of
+        relying on `before_nonlinear_loop`, since that hook also fires once per
+        subsolver's own inner loop -- see `__init__`.
+
+        """
         if self.config.verbosity == 0:
             return
+        if iteration_index == 1:
+            self._previous_outer_block_residual_norms = {}
         self._writer.write_record(
             {
                 "schema_version": SCHEMA_VERSION,
@@ -459,7 +487,10 @@ class NonlinearTelemetryRecorder:
                 "divergence_status": _stringify_status(divergence_status),
                 "convergence_info": dict(convergence_info),
                 "blocks": self._block_residual_fields(
-                    model, full_residual, equation_indexer
+                    model,
+                    full_residual,
+                    equation_indexer,
+                    self._previous_outer_block_residual_norms,
                 ),
                 "admissibility": self._admissibility_counts(model),
             }
@@ -496,9 +527,18 @@ class NonlinearTelemetryRecorder:
         model: pp.PorePyModel,
         residual: np.ndarray,
         equation_indexer: pp.ad.EquationIndexer,
+        previous_norms: dict[str, float],
     ) -> dict[str, dict[str, Any]]:
         """Per-equation-block residual telemetry: L-inf norm, reduction factor, and
         the cell location of the largest-magnitude entry.
+
+        Parameters:
+            model: The model being solved.
+            residual: Residual vector matching `equation_indexer`'s layout.
+            equation_indexer: Indexer scoped to `residual` (see `record_iteration`).
+            previous_norms: The caller's own previous-iteration L-inf norms, by block
+                name, updated in place. Callers with different iteration cadences
+                (inner vs. outer) must pass different dicts -- see `__init__`.
 
         """
         if self.config.equation_tags:
@@ -521,13 +561,13 @@ class NonlinearTelemetryRecorder:
             block_residual = residual[block_indices]
             norm = float(np.max(np.abs(block_residual)))
 
-            previous_norm = self._previous_block_residual_norms.get(name)
+            previous_norm = previous_norms.get(name)
             reduction_factor = (
                 norm / previous_norm
                 if previous_norm is not None and previous_norm != 0.0
                 else None
             )
-            self._previous_block_residual_norms[name] = norm
+            previous_norms[name] = norm
 
             fields[name] = {
                 "residual_inf_norm": norm,

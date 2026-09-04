@@ -618,6 +618,76 @@ class TestNonlinearTelemetryRecorder:
         for record in records:
             assert record["blocks"]["mass_balance_equation"]["reduction_factor"] is None
 
+    def test_inner_before_nonlinear_loop_does_not_disturb_outer_reduction_factor(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression test: `before_nonlinear_loop` used to reset a single shared
+        reduction-factor dict, so a subsolver starting a fresh inner Newton loop (which
+        calls `before_nonlinear_loop` on the same shared recorder, per
+        SequentialNonlinearSolver's design) would silently wipe out the outer loop's
+        own "previous iteration" state. A failure here means that regressed.
+
+        """
+        model = _prepared_model()
+        recorder = self._recorder(tmp_path)
+
+        def record_outer(residual: np.ndarray, iteration_index: int) -> None:
+            recorder.record_outer_iteration(
+                model=model,
+                iteration_index=iteration_index,
+                nonlinear_increment=np.zeros_like(residual),
+                full_residual=residual,
+                equation_indexer=model.equation_system.equation_indexer,
+                convergence_status=ConvergenceStatusCollection(),
+                divergence_status=ConvergenceStatusCollection(),
+                convergence_info={},
+            )
+
+        # Outer iteration 1, then a subsolver's inner Newton loop starts (as
+        # SequentialNonlinearSolver's subsolvers do on every outer iteration),
+        # calling before_nonlinear_loop on this same, shared recorder.
+        record_outer(np.array([1.0, -2.0, 4.0, 0.0]), iteration_index=1)  # inf-norm 4.0
+        recorder.before_nonlinear_loop(model)
+        record_outer(np.array([1.0, -1.0, 2.0, 0.0]), iteration_index=2)  # inf-norm 2.0
+
+        records = read_jsonl_records(tmp_path / "telemetry.jsonl")
+        assert records[0]["blocks"]["mass_balance_equation"]["reduction_factor"] is None
+        assert records[1]["blocks"]["mass_balance_equation"][
+            "reduction_factor"
+        ] == pytest.approx(0.5)
+
+    def test_record_outer_iteration_resets_on_first_iteration_of_a_new_solve(
+        self, tmp_path: Path
+    ) -> None:
+        """A second `SequentialNonlinearSolver.solve()` call starts its own
+        `iteration_index` back at 1; the outer reduction factor must not carry over
+        from the previous solve's last iteration.
+
+        """
+        model = _prepared_model()
+        recorder = self._recorder(tmp_path)
+
+        def record_outer(residual: np.ndarray, iteration_index: int) -> None:
+            recorder.record_outer_iteration(
+                model=model,
+                iteration_index=iteration_index,
+                nonlinear_increment=np.zeros_like(residual),
+                full_residual=residual,
+                equation_indexer=model.equation_system.equation_indexer,
+                convergence_status=ConvergenceStatusCollection(),
+                divergence_status=ConvergenceStatusCollection(),
+                convergence_info={},
+            )
+
+        # First "solve()": two outer iterations, ending with inf-norm 2.0.
+        record_outer(np.array([1.0, -2.0, 4.0, 0.0]), iteration_index=1)
+        record_outer(np.array([1.0, -1.0, 2.0, 0.0]), iteration_index=2)
+        # Second "solve()": iteration_index restarts at 1.
+        record_outer(np.array([1.0, -1.0, 3.0, 0.0]), iteration_index=1)
+
+        records = read_jsonl_records(tmp_path / "telemetry.jsonl")
+        assert records[2]["blocks"]["mass_balance_equation"]["reduction_factor"] is None
+
     def test_verbosity_zero_disables_recording(self, tmp_path: Path) -> None:
         model = _prepared_model()
         residual, equation_indexer = _full_residual_and_indexer(model)
