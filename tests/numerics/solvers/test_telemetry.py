@@ -768,3 +768,99 @@ class TestNonlinearTelemetryRecorder:
             "success": False,
             "reason": "singular matrix",
         }
+
+    def test_no_admissibility_bounds_configured_gives_empty_dict(
+        self, tmp_path: Path
+    ) -> None:
+        model = _prepared_model()
+        residual, equation_indexer = _full_residual_and_indexer(model)
+        recorder = self._recorder(tmp_path)
+
+        recorder.record_iteration(
+            model=model,
+            iteration_index=1,
+            nonlinear_increment=np.zeros_like(residual),
+            residual=residual,
+            equation_indexer=equation_indexer,
+            linear_solver_status=LinearSolverStatusSuccess(solve_time=0.0),
+            convergence_status=ConvergenceStatusCollection(),
+            divergence_status=ConvergenceStatusCollection(),
+            convergence_info={},
+        )
+
+        [record] = read_jsonl_records(tmp_path / "telemetry.jsonl")
+        assert record["admissibility"] == {}
+
+    def test_admissibility_counts_violations(self, tmp_path: Path) -> None:
+        model = _prepared_model()
+        _perturb_pressure(model)  # pressure = [1.0, 2.0, 5.0, 0.5]
+        residual, equation_indexer = _full_residual_and_indexer(model)
+        recorder = self._recorder(
+            tmp_path, admissibility_bounds={"pressure": (0.75, 3.0)}
+        )
+
+        recorder.record_iteration(
+            model=model,
+            iteration_index=1,
+            nonlinear_increment=np.zeros_like(residual),
+            residual=residual,
+            equation_indexer=equation_indexer,
+            linear_solver_status=LinearSolverStatusSuccess(solve_time=0.0),
+            convergence_status=ConvergenceStatusCollection(),
+            divergence_status=ConvergenceStatusCollection(),
+            convergence_info={},
+        )
+
+        [record] = read_jsonl_records(tmp_path / "telemetry.jsonl")
+        validate_record(record)
+        assert record["admissibility"] == {
+            "pressure": {"num_below": 1, "num_above": 1, "num_total": 4}
+        }
+
+    def test_admissibility_counts_are_also_written_for_outer_iteration(
+        self, tmp_path: Path
+    ) -> None:
+        model = _prepared_model()
+        _perturb_pressure(model)
+        residual, equation_indexer = _full_residual_and_indexer(model)
+        recorder = self._recorder(
+            tmp_path, admissibility_bounds={"pressure": (0.75, 3.0)}
+        )
+
+        recorder.record_outer_iteration(
+            model=model,
+            iteration_index=1,
+            nonlinear_increment=np.zeros_like(residual),
+            full_residual=residual,
+            equation_indexer=equation_indexer,
+            convergence_status=ConvergenceStatusCollection(),
+            divergence_status=ConvergenceStatusCollection(),
+            convergence_info={},
+        )
+
+        [record] = read_jsonl_records(tmp_path / "telemetry.jsonl")
+        assert record["admissibility"] == {
+            "pressure": {"num_below": 1, "num_above": 1, "num_total": 4}
+        }
+
+    def test_admissibility_bounds_for_unknown_variable_raises(
+        self, tmp_path: Path
+    ) -> None:
+        model = _prepared_model()
+        residual, equation_indexer = _full_residual_and_indexer(model)
+        recorder = self._recorder(
+            tmp_path, admissibility_bounds={"temperature": (0.0, 1.0)}
+        )
+
+        with pytest.raises(ValueError, match="temperature"):
+            recorder.record_iteration(
+                model=model,
+                iteration_index=1,
+                nonlinear_increment=np.zeros_like(residual),
+                residual=residual,
+                equation_indexer=equation_indexer,
+                linear_solver_status=LinearSolverStatusSuccess(solve_time=0.0),
+                convergence_status=ConvergenceStatusCollection(),
+                divergence_status=ConvergenceStatusCollection(),
+                convergence_info={},
+            )

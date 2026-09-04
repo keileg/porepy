@@ -367,12 +367,13 @@ def _validate_run_record(record: dict[str, Any]) -> None:
 class NonlinearTelemetryRecorder:
     """Concrete `NonlinearIterationRecorder`, writing JSONL to `config.output_path`.
 
-    Physics-agnostic: relies only on the equation block structure every PorePy model
-    exposes through `EquationOnDomain`/`EquationIndexer`. This first implementation
-    covers the raw per-block residual fields (L-inf norm, reduction factor, argmax
-    cell location) plus linear-solver status; duck-typed fields (line-search
-    telemetry, contact-state counts, admissibility counts) and level-2 spatial fields
-    are added by later commits -- constructing this recorder for a model that doesn't
+    Physics-agnostic: relies only on the equation/variable block structure every
+    PorePy model exposes through `EquationOnDomain`/`Variable`/`EquationIndexer`.
+    Covers the raw per-block residual fields (L-inf norm, reduction factor, argmax
+    cell location), linear-solver status, and admissibility counts (config-declared
+    bounds, pure counting). Duck-typed fields specific to contact mechanics
+    (line-search telemetry, contact-state counts) and level-2 spatial fields are
+    added by later commits -- constructing this recorder for a model that doesn't
     expose those hooks simply leaves the corresponding record fields absent for now.
 
     Parameters:
@@ -417,6 +418,7 @@ class NonlinearTelemetryRecorder:
                 "blocks": self._block_residual_fields(
                     model, residual, equation_indexer
                 ),
+                "admissibility": self._admissibility_counts(model),
             }
         )
 
@@ -445,6 +447,7 @@ class NonlinearTelemetryRecorder:
                 "blocks": self._block_residual_fields(
                     model, full_residual, equation_indexer
                 ),
+                "admissibility": self._admissibility_counts(model),
             }
         )
 
@@ -553,6 +556,37 @@ class NonlinearTelemetryRecorder:
             "argmax index not found in any domain; block_indices/domains_to_indices "
             "are inconsistent."
         )
+
+    def _admissibility_counts(self, model: pp.PorePyModel) -> dict[str, dict[str, int]]:
+        """Count, per configured variable, how many entries fall outside its bounds.
+
+        Read-only counting: `TelemetryConfig.admissibility_bounds` declares the bounds,
+        this only reports how many degrees of freedom violate them. Acting on a
+        violation (clamping, relaxing) is D1 territory, not this recorder's job.
+
+        """
+        if not self.config.admissibility_bounds:
+            return {}
+
+        all_values = model.equation_system.get_variable_values(iterate_index=0)
+        variable_groups = model.equation_system.variable_indexer.group_by_name()
+
+        counts: dict[str, dict[str, int]] = {}
+        for name, (lower, upper) in self.config.admissibility_bounds.items():
+            domains_to_indices = variable_groups.get(name)
+            if not domains_to_indices:
+                raise ValueError(
+                    f"admissibility_bounds declares a bound for variable {name!r}, "
+                    "but the model has no such variable."
+                )
+            indices = np.concatenate(list(domains_to_indices.values()))
+            values = all_values[indices]
+            counts[name] = {
+                "num_below": int(np.sum(values < lower)),
+                "num_above": int(np.sum(values > upper)),
+                "num_total": int(values.size),
+            }
+        return counts
 
 
 def _stringify_status(status: ConvergenceStatusCollection) -> dict[str, str]:
