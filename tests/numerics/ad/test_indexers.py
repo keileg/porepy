@@ -8,6 +8,10 @@ import numpy as np
 import pytest
 
 import porepy as pp
+from porepy.applications.md_grids.model_geometries import (
+    SquareDomainOrthogonalFractures,
+)
+from porepy.models.fluid_mass_balance import SinglePhaseFlow
 
 
 def get_domains() -> list[pp.Grid]:
@@ -545,3 +549,79 @@ class TestDofToCell:
         domain = pp.CartGrid([3])
         with pytest.raises(ValueError, match="out of range"):
             pp.ad.dof_to_cell(3, domain, num_components=1)
+
+
+class TestConstructMatchingRestrictedIndexer:
+    """Regression tests for `construct_matching_restricted_indexer`.
+
+    A failure here most likely means per-block telemetry (or anything else that slices
+    a residual/Jacobian restricted to a solver's own active equations) would silently
+    attribute values to the wrong equation/domain block whenever a solver operates on
+    a subset of the model's equations -- e.g. a subsolver of
+    `SequentialNonlinearSolver`, which is the normal case for this project's THM +
+    fracture-deformation models.
+
+    """
+
+    @staticmethod
+    def _model() -> pp.PorePyModel:
+        """A model with one fracture, so `assemble` has multiple blocks/domains to
+        reorder: enough to actually exercise the reordering this function does.
+
+        """
+
+        class Model(SquareDomainOrthogonalFractures, SinglePhaseFlow):
+            """Mock-up model."""
+
+        model = Model({})
+        model.prepare_simulation()
+        return model
+
+    def test_matches_assemble_output_for_reordered_subset(self) -> None:
+        model = self._model()
+        equation_system = model.equation_system
+        equation_indexer = equation_system.equation_indexer
+
+        # A subset, deliberately requested out of the full indexer's own canonical
+        # order, to make sure the reordering this function does is actually exercised.
+        all_equations = list(equation_indexer.indices)
+        assert len(all_equations) >= 3, "Test needs several equation/domain blocks."
+        subset = list(reversed(all_equations[:3]))
+        canonical_order_of_subset = [eq for eq in all_equations if eq in subset]
+        assert subset != canonical_order_of_subset, (
+            "Subset must be out of canonical order for this test to be meaningful."
+        )
+
+        residual = equation_system.assemble(evaluate_jacobian=False, equations=subset)
+        restricted_indexer = pp.ad.construct_matching_restricted_indexer(
+            equation_indexer, subset
+        )
+
+        assert restricted_indexer.size == residual.size
+        assert list(restricted_indexer.indices) == canonical_order_of_subset
+
+        # Each block sliced out of `residual` via the restricted indexer must match
+        # assembling that one equation/domain alone.
+        for equation in subset:
+            block_from_residual = residual[restricted_indexer.indices[equation]]
+            block_alone = equation_system.assemble(
+                evaluate_jacobian=False, equations=[equation]
+            )
+            np.testing.assert_allclose(block_from_residual, block_alone)
+
+    def test_full_set_matches_the_unrestricted_indexer(self) -> None:
+        # The common case (a solver operating on all equations): restricting to
+        # everything should reproduce the unrestricted indexer's own offsets exactly.
+        model = self._model()
+        equation_indexer = model.equation_system.equation_indexer
+        all_equations = list(equation_indexer.indices)
+
+        restricted_indexer = pp.ad.construct_matching_restricted_indexer(
+            equation_indexer, all_equations
+        )
+
+        assert list(restricted_indexer.indices) == all_equations
+        for equation in all_equations:
+            np.testing.assert_array_equal(
+                restricted_indexer.indices[equation], equation_indexer.indices[equation]
+            )

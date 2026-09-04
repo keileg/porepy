@@ -23,6 +23,7 @@ __all__ = [
     "EquationIndexer",
     "EquationSystemIndexer",
     "dof_to_cell",
+    "construct_matching_restricted_indexer",
 ]
 
 
@@ -352,6 +353,42 @@ def dof_to_cell(local_index: int, domain: pp.GridLike, num_components: int) -> i
             f"range for domain with {domain.num_cells} cells."
         )
     return cell_index
+
+
+def construct_matching_restricted_indexer[
+    EquationOrVariableType: (EquationOnDomain, Variable)
+](
+    indexer: Indexer[EquationOrVariableType],
+    operators: list[EquationOrVariableType],
+) -> Indexer[EquationOrVariableType]:
+    """Construct a restricted indexer whose offsets match an `assemble()` call's output.
+
+    `EquationSystem.assemble` always lays out its result according to the full
+    `equation_indexer`'s own canonical (registration) order, filtered to the requested
+    subset, regardless of the order that subset was given in
+    (`EquationSystem._parse_equations`). `Indexer.construct_restricted_indexer`,
+    by contrast, preserves whatever order it is given. Passing a subset in an
+    arbitrary order (e.g. `NewtonSolver.get_active_equations`'s return value) directly
+    to `construct_restricted_indexer` therefore does not, in general, reproduce the
+    offsets `assemble` actually used for a residual/Jacobian restricted to that same
+    subset -- this function does, by first re-ordering `operators` to `indexer`'s own
+    order.
+
+    Parameters:
+        indexer: The full, unrestricted indexer (e.g. `EquationSystem.
+            equation_indexer`/`variable_indexer`) `operators` were assembled against.
+        operators: The requested subset, in any order.
+
+    Returns:
+        A restricted indexer whose block offsets match the residual/Jacobian produced
+        by `assemble(equations=operators, ...)` (or the variable-side equivalent).
+
+    """
+    operators_set = set(operators)
+    canonical_order = [
+        operator for operator in indexer.indices if operator in operators_set
+    ]
+    return indexer.construct_restricted_indexer(canonical_order)
 
 
 # Specified parametrization.

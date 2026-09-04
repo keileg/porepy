@@ -95,6 +95,8 @@ class _FakeRecorder:
         model,
         iteration_index,
         nonlinear_increment,
+        residual,
+        equation_indexer,
         linear_solver_status,
         convergence_status,
         divergence_status,
@@ -107,6 +109,8 @@ class _FakeRecorder:
                     model,
                     iteration_index,
                     nonlinear_increment,
+                    residual,
+                    equation_indexer,
                     linear_solver_status,
                     convergence_status,
                     divergence_status,
@@ -121,6 +125,7 @@ class _FakeRecorder:
         iteration_index,
         nonlinear_increment,
         full_residual,
+        equation_indexer,
         convergence_status,
         divergence_status,
         convergence_info,
@@ -133,6 +138,7 @@ class _FakeRecorder:
                     iteration_index,
                     nonlinear_increment,
                     full_residual,
+                    equation_indexer,
                     convergence_status,
                     divergence_status,
                     convergence_info,
@@ -192,11 +198,17 @@ class TestNonlinearIterationRecorderInvocation:
         convergence_info: ConvergenceInfoCollection = {"res_abs": {"norm": 1.0e-3}}
         linear_solver_status = LinearSolverStatusSuccess(solve_time=0.01)
         nonlinear_increment = np.ones(3)
+        domain = pp.CartGrid([3])
+        equation = pp.ad.EquationOnDomain("mass_balance_equation", domain)
+        residual = np.array([1.0, 2.0, 3.0])
+        equation_indexer = pp.ad.EquationIndexer(indices={equation: np.arange(3)})
 
         recorder.record_iteration(
             model=model,
             iteration_index=1,
             nonlinear_increment=nonlinear_increment,
+            residual=residual,
+            equation_indexer=equation_indexer,
             linear_solver_status=linear_solver_status,
             convergence_status=convergence_status,
             divergence_status=divergence_status,
@@ -209,6 +221,8 @@ class TestNonlinearIterationRecorderInvocation:
             recorded_model,
             recorded_iteration_index,
             recorded_increment,
+            recorded_residual,
+            recorded_equation_indexer,
             recorded_linear_status,
             recorded_convergence_status,
             recorded_divergence_status,
@@ -217,6 +231,8 @@ class TestNonlinearIterationRecorderInvocation:
         assert recorded_model is model
         assert recorded_iteration_index == 1
         np.testing.assert_array_equal(recorded_increment, nonlinear_increment)
+        np.testing.assert_array_equal(recorded_residual, residual)
+        assert recorded_equation_indexer is equation_indexer
         assert recorded_linear_status is linear_solver_status
         assert recorded_convergence_status is convergence_status
         assert recorded_divergence_status is divergence_status
@@ -230,12 +246,16 @@ class TestNonlinearIterationRecorderInvocation:
         )
         divergence_status = ConvergenceStatusCollection()
         convergence_info: ConvergenceInfoCollection = {"res_abs": {"norm": 1.0e-11}}
+        domain = pp.CartGrid([2])
+        equation = pp.ad.EquationOnDomain("mass_balance_equation", domain)
+        equation_indexer = pp.ad.EquationIndexer(indices={equation: np.arange(2)})
 
         recorder.record_outer_iteration(
             model=model,
             iteration_index=2,
             nonlinear_increment=np.zeros(2),
             full_residual=np.ones(2) * 1e-11,
+            equation_indexer=equation_indexer,
             convergence_status=convergence_status,
             divergence_status=divergence_status,
             convergence_info=convergence_info,

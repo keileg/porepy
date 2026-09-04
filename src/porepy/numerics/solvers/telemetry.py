@@ -126,6 +126,8 @@ class NonlinearIterationRecorder(Protocol):
         model: pp.PorePyModel,
         iteration_index: int,
         nonlinear_increment: np.ndarray,
+        residual: np.ndarray,
+        equation_indexer: pp.ad.EquationIndexer,
         linear_solver_status: LinearSolverStatus,
         convergence_status: ConvergenceStatusCollection,
         divergence_status: ConvergenceStatusCollection,
@@ -138,6 +140,16 @@ class NonlinearIterationRecorder(Protocol):
             iteration_index: The Newton iteration counter (`NewtonSolver.
                 iteration_index`).
             nonlinear_increment: The Newton step just taken.
+            residual: Residual vector for this solver's active equations (`NewtonSolver.
+                get_active_equations`), evaluated at the state after this iteration's
+                increment. Not necessarily the full model's residual: a `NewtonSolver`
+                used as a subsolver of a `SequentialNonlinearSolver` is scoped to a
+                subset of the model's equations.
+            equation_indexer: Indexer whose block offsets match `residual`'s layout --
+                i.e. already restricted to this solver's active equations, in the same
+                order `residual` was assembled in. Slicing per-block values must go
+                through this indexer, not `model.equation_system.equation_indexer`,
+                whenever this solver is scoped to fewer than all equations.
             linear_solver_status: Status returned by the linear solve for this
                 iteration.
             convergence_status: Per-criterion convergence status for this iteration.
@@ -154,6 +166,7 @@ class NonlinearIterationRecorder(Protocol):
         iteration_index: int,
         nonlinear_increment: np.ndarray,
         full_residual: np.ndarray,
+        equation_indexer: pp.ad.EquationIndexer,
         convergence_status: ConvergenceStatusCollection,
         divergence_status: ConvergenceStatusCollection,
         convergence_info: ConvergenceInfoCollection,
@@ -169,8 +182,11 @@ class NonlinearIterationRecorder(Protocol):
             iteration_index: The outer iteration counter.
             nonlinear_increment: Change in the full solution vector over this outer
                 iteration.
-            full_residual: Residual of the full system (all subsolvers' equations
-                together) at this outer iteration.
+            full_residual: Residual of the full system (the union of all subsolvers'
+                active equations, `SequentialNonlinearSolver.get_active_equations`) at
+                this outer iteration.
+            equation_indexer: Indexer whose block offsets match `full_residual`'s
+                layout, analogous to `record_iteration`'s `equation_indexer`.
             convergence_status: Per-criterion convergence status for this outer
                 iteration.
             divergence_status: Per-criterion divergence status for this outer
