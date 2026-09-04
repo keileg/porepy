@@ -470,3 +470,48 @@ def test_empty_indices(indexer_type: str):
     assert len(grouped["x"]) == 1, "Only the non-empty domain."
     assert list(grouped["x"].keys())[0] == grid_0
     np.testing.assert_array_equal(list(grouped["x"].values())[0], [0, 1])
+
+
+class TestDofToCell:
+    """Unit tests for `dof_to_cell`.
+
+    A failure here most likely means the cell-major layout assumption (all components
+    of a cell contiguous before the next cell's) no longer matches how the AD framework
+    actually orders cell-centered degrees of freedom, which would silently mislocate
+    every telemetry field that reports "which cell" (e.g. the L∞ argmax location).
+
+    """
+
+    def test_scalar_quantity(self) -> None:
+        """One degree of freedom per cell: local index equals cell index."""
+        domain = pp.CartGrid([5])
+        for local_index in range(domain.num_cells):
+            assert pp.ad.dof_to_cell(local_index, domain, num_components=1) == (
+                local_index
+            )
+
+    def test_vector_quantity(self) -> None:
+        """Multiple degrees of freedom per cell, interleaved cell-major."""
+        domain = pp.CartGrid([4])
+        num_components = 3
+        expected_cell = [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]
+        for local_index, cell in enumerate(expected_cell):
+            assert (
+                pp.ad.dof_to_cell(local_index, domain, num_components=num_components)
+                == cell
+            )
+
+    def test_non_positive_num_components_raises(self) -> None:
+        domain = pp.CartGrid([3])
+        with pytest.raises(ValueError, match="num_components"):
+            pp.ad.dof_to_cell(0, domain, num_components=0)
+
+    def test_negative_local_index_raises(self) -> None:
+        domain = pp.CartGrid([3])
+        with pytest.raises(ValueError, match="local_index"):
+            pp.ad.dof_to_cell(-1, domain, num_components=1)
+
+    def test_out_of_range_local_index_raises(self) -> None:
+        domain = pp.CartGrid([3])
+        with pytest.raises(ValueError, match="out of range"):
+            pp.ad.dof_to_cell(3, domain, num_components=1)

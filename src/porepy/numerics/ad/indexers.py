@@ -22,6 +22,7 @@ __all__ = [
     "Indexer",
     "EquationIndexer",
     "EquationSystemIndexer",
+    "dof_to_cell",
 ]
 
 
@@ -308,6 +309,49 @@ class EquationSystemIndexer(Indexer[EquationOnDomain]):
         Note: It does not include equations with empty domains.
 
         """
+
+
+def dof_to_cell(local_index: int, domain: pp.GridLike, num_components: int) -> int:
+    """Map a within-block degree of freedom to the cell it belongs to.
+
+    Applies to cell-centered quantities only (e.g. balance-equation residuals, contact
+    traction/gap indicators). Degrees of freedom for such a quantity on a single domain
+    are laid out cell-major: all `num_components` components of a cell are contiguous
+    before the next cell's components begin (the same convention the ``order="F"``
+    reshape in :meth:`~porepy.models.metric.EquationBasedEuclideanMetric.__call__`
+    relies on). This helper inverts that layout to answer "which cell does this local
+    degree of freedom belong to."
+
+    Parameters:
+        local_index: Index of the degree of freedom within a single block, i.e.
+            relative to the start of that block's own index range (for example, an
+            entry of ``indexer.indices[equation_on_domain]`` after subtracting its
+            first element, or an index already local to a per-block slice).
+        domain: The domain the block is defined on. Used only to validate that the
+            resulting cell index is in range.
+        num_components: Number of degrees of freedom per cell for this block, e.g.
+            ``equation_system.equations[name].target.dof_info.cells`` or a
+            variable's ``ndof["cells"]``.
+
+    Returns:
+        The 0-based index, within `domain`, of the cell `local_index` belongs to.
+
+    Raises:
+        ValueError: If `num_components` is not positive, `local_index` is negative, or
+            the resulting cell index is not smaller than `domain.num_cells`.
+
+    """
+    if num_components <= 0:
+        raise ValueError(f"num_components must be positive, got {num_components}.")
+    if local_index < 0:
+        raise ValueError(f"local_index must be non-negative, got {local_index}.")
+    cell_index = local_index // num_components
+    if cell_index >= domain.num_cells:
+        raise ValueError(
+            f"local_index {local_index} maps to cell {cell_index}, which is out of "
+            f"range for domain with {domain.num_cells} cells."
+        )
+    return cell_index
 
 
 # Specified parametrization.
