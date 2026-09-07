@@ -13,7 +13,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -48,6 +48,12 @@ __all__ = [
     "read_jsonl_records",
     "validate_record",
     "NonlinearTelemetryRecorder",
+    "ContactState",
+    "CONTACT_STATE_OPEN",
+    "CONTACT_STATE_STICK",
+    "CONTACT_STATE_SLIP",
+    "evaluate_contact_state",
+    "contact_state_counts",
 ]
 
 
@@ -247,6 +253,31 @@ the same two indicator functions.
 
 """
 
+CONTACT_STATE_OPEN = 0
+"""Contact-state label for an open fracture cell."""
+CONTACT_STATE_STICK = 1
+"""Contact-state label for a closed, sticking fracture cell."""
+CONTACT_STATE_SLIP = 2
+"""Contact-state label for a closed, slipping fracture cell."""
+
+
+@dataclass(frozen=True)
+class ContactState:
+    """The contact state of every fracture cell at one iterate.
+
+    Parameters:
+        labels: Per-cell state, one of `CONTACT_STATE_OPEN`/`_STICK`/`_SLIP`. Held as
+            `int8` so its byte representation is fixed-width and platform-independent,
+            which matters because it is hashed to identify the active set.
+        opening: Raw `opening_indicator` values, kept for near-transition counting.
+        sliding: Raw `sliding_indicator` values, kept for the same reason.
+
+    """
+
+    labels: np.ndarray
+    opening: np.ndarray
+    sliding: np.ndarray
+
 
 class JSONLWriter:
     """Append-only writer for a telemetry record stream, one JSON object per line.
@@ -433,6 +464,7 @@ class NonlinearTelemetryRecorder:
         """Write one "iteration" record. See `NonlinearIterationRecorder`."""
         if self.config.verbosity == 0:
             return
+        contact_state = evaluate_contact_state(model)
         self._writer.write_record(
             {
                 "schema_version": SCHEMA_VERSION,
@@ -449,10 +481,24 @@ class NonlinearTelemetryRecorder:
                     self._previous_inner_block_residual_norms,
                 ),
                 "admissibility": self._admissibility_counts(model),
-                "contact_state": self._contact_state_counts(model),
+                "contact_state": self._contact_state_fields(model, contact_state),
                 "line_search": self._line_search_fields(model),
             }
         )
+
+    def _contact_state_fields(
+        self, model: pp.PorePyModel, state: Optional[ContactState]
+    ) -> Optional[dict[str, int]]:
+        """Contact-state counts, or `None` for a model without fracture contact
+        mechanics.
+
+        """
+        if state is None:
+            return None
+        tolerance = model.params.get(
+            "constraint_violation_tolerance", _DEFAULT_CONSTRAINT_VIOLATION_TOLERANCE
+        )
+        return contact_state_counts(state, tolerance)
 
     def record_outer_iteration(
         self,
@@ -642,54 +688,6 @@ class NonlinearTelemetryRecorder:
             }
         return counts
 
-    def _contact_state_counts(self, model: pp.PorePyModel) -> dict[str, int] | None:
-        """Duck-typed contact-state counts: how many fracture cells are open,
-        sticking, or slipping.
-
-        `None` if the model doesn't expose `opening_indicator`/`sliding_indicator`
-        (`ContactIndicators`, or an equivalent) or has no fracture subdomains.
-
-        Sign convention follows `ContactIndicators.opening_indicator`/
-        `sliding_indicator` directly: negative opening indicator means open,
-        negative sliding indicator means sticking. `num_near_*_transition` additionally
-        counts cells within `params["constraint_violation_tolerance"]` (default `3e-1`,
-        the same model parameter `ConstraintLineSearch.constraint_weights` already uses
-        for these same two indicators) of a sign change, without changing which side of
-        zero a cell is classified on -- a diagnostic on top of the classification, not a
-        redefinition of it.
-
-        """
-        if not (
-            hasattr(model, "opening_indicator") and hasattr(model, "sliding_indicator")
-        ):
-            return None
-        fracture_subdomains = model.mdg.subdomains(dim=model.nd - 1)
-        if not fracture_subdomains:
-            return None
-
-        opening = model.equation_system.evaluate(
-            model.opening_indicator(fracture_subdomains)
-        )
-        sliding = model.equation_system.evaluate(
-            model.sliding_indicator(fracture_subdomains)
-        )
-        tolerance = model.params.get(
-            "constraint_violation_tolerance", _DEFAULT_CONSTRAINT_VIOLATION_TOLERANCE
-        )
-
-        is_open = opening < 0
-        is_slip = ~is_open & (sliding >= 0)
-        is_stick = ~is_open & ~is_slip
-
-        return {
-            "num_open": int(np.sum(is_open)),
-            "num_stick": int(np.sum(is_stick)),
-            "num_slip": int(np.sum(is_slip)),
-            "num_total": int(opening.size),
-            "num_near_opening_transition": int(np.sum(np.abs(opening) < tolerance)),
-            "num_near_sliding_transition": int(np.sum(np.abs(sliding) < tolerance)),
-        }
-
     def _line_search_fields(self, model: pp.PorePyModel) -> dict[str, float] | None:
         """Duck-typed line-search telemetry: the accepted step's relaxation factor.
 
@@ -707,6 +705,68 @@ class NonlinearTelemetryRecorder:
         if not weight_arrays:
             return None
         return {"alpha": float(min(np.min(weights) for weights in weight_arrays))}
+
+
+def evaluate_contact_state(model: pp.PorePyModel) -> Optional[ContactState]:
+    """Evaluate the contact state of every fracture cell, once.
+
+    Duck-typed: `None` if the model doesn't expose `opening_indicator`/
+    `sliding_indicator` (`ContactIndicators`, or an equivalent) or has no fracture
+    subdomains. Costs exactly two AD evaluations, so callers that need both
+    state counts and the labels must share one result rather than calling twice.
+
+    Parameters:
+        model: The model whose current iterate is to be classified.
+
+    Returns:
+        The evaluated state, or `None` for a model without fracture contact
+        mechanics.
+
+    """
+    if not (
+        hasattr(model, "opening_indicator") and hasattr(model, "sliding_indicator")
+    ):
+        return None
+    fracture_subdomains = model.mdg.subdomains(dim=model.nd - 1)
+    if not fracture_subdomains:
+        return None
+
+    opening = model.equation_system.evaluate(
+        model.opening_indicator(fracture_subdomains)
+    )
+    sliding = model.equation_system.evaluate(
+        model.sliding_indicator(fracture_subdomains)
+    )
+
+    is_open = opening < 0
+    is_slip = ~is_open & (sliding >= 0)
+    labels = np.full(opening.size, CONTACT_STATE_STICK, dtype=np.int8)
+    labels[is_open] = CONTACT_STATE_OPEN
+    labels[is_slip] = CONTACT_STATE_SLIP
+
+    return ContactState(labels=labels, opening=opening, sliding=sliding)
+
+
+def contact_state_counts(state: ContactState, tolerance: float) -> dict[str, int]:
+    """Count fracture cells per contact state, and cells close to a transition.
+
+    Parameters:
+        state: Evaluated contact state, from :func:`evaluate_contact_state`.
+        tolerance: How close to zero an indicator must be for its cell to count as
+            near a transition. Does not affect the state classification itself.
+
+    Returns:
+        Counts per state, the total, and the two near-transition counts.
+
+    """
+    return {
+        "num_open": int(np.sum(state.labels == CONTACT_STATE_OPEN)),
+        "num_stick": int(np.sum(state.labels == CONTACT_STATE_STICK)),
+        "num_slip": int(np.sum(state.labels == CONTACT_STATE_SLIP)),
+        "num_total": int(state.labels.size),
+        "num_near_opening_transition": int(np.sum(np.abs(state.opening) < tolerance)),
+        "num_near_sliding_transition": int(np.sum(np.abs(state.sliding) < tolerance)),
+    }
 
 
 def _stringify_status(status: ConvergenceStatusCollection) -> dict[str, str]:

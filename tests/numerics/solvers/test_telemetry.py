@@ -31,11 +31,16 @@ from porepy.numerics.solvers.linear_solvers.linear_solver import (
 )
 from porepy.numerics.solvers.newton_solver import NewtonSolverConverged
 from porepy.numerics.solvers.telemetry import (
+    CONTACT_STATE_OPEN,
+    CONTACT_STATE_SLIP,
+    CONTACT_STATE_STICK,
     SCHEMA_VERSION,
     JSONLWriter,
     NonlinearIterationRecorder,
     NonlinearTelemetryRecorder,
     TelemetryConfig,
+    contact_state_counts,
+    evaluate_contact_state,
     read_jsonl_records,
     validate_record,
 )
@@ -993,6 +998,71 @@ def _record_bare_iteration(
     )
     [record] = read_jsonl_records(recorder.config.output_path)
     return record
+
+
+class TestEvaluateContactState:
+    """Tests for the shared contact-state evaluation the counts and the cycle
+    detection both build on.
+
+    A failure here most likely means the label encoding drifted from the sign
+    convention `ContactIndicators.opening_indicator`/`sliding_indicator` document
+    (negative opening = open, negative sliding = sticking).
+
+    """
+
+    def test_none_for_a_model_without_contact_indicators(self) -> None:
+        assert evaluate_contact_state(_prepared_model()) is None
+
+    def test_labels_follow_the_indicator_sign_convention(self) -> None:
+        # Cell 0: opening < 0 -> open. Cell 1: closed, sliding < 0 -> stick.
+        model = _fixed_indicator_model(
+            opening_values=np.array([-0.9, 0.9]),
+            sliding_values=np.array([0.0, -0.9]),
+        )
+        state = evaluate_contact_state(model)
+        assert state is not None
+        np.testing.assert_array_equal(
+            state.labels, [CONTACT_STATE_OPEN, CONTACT_STATE_STICK]
+        )
+
+    def test_slip_label(self) -> None:
+        model = _fixed_indicator_model(
+            opening_values=np.array([0.9, 0.9]),
+            sliding_values=np.array([0.1, -0.2]),
+        )
+        state = evaluate_contact_state(model)
+        assert state is not None
+        np.testing.assert_array_equal(
+            state.labels, [CONTACT_STATE_SLIP, CONTACT_STATE_STICK]
+        )
+
+    def test_labels_are_int8_so_their_bytes_are_stable_to_hash(self) -> None:
+        # The cycle detection hashes these bytes; a platform-dependent int width
+        # would make the same active set hash differently on different machines.
+        model = _fixed_indicator_model(
+            opening_values=np.array([-0.9, 0.9]),
+            sliding_values=np.array([0.0, -0.9]),
+        )
+        state = evaluate_contact_state(model)
+        assert state is not None
+        assert state.labels.dtype == np.int8
+
+    def test_counts_derive_from_labels(self) -> None:
+        model = _fixed_indicator_model(
+            opening_values=np.array([-0.9, 0.2]),
+            sliding_values=np.array([0.0, -0.9]),
+        )
+        state = evaluate_contact_state(model)
+        assert state is not None
+
+        counts = contact_state_counts(state, tolerance=0.3)
+
+        assert counts["num_open"] == 1
+        assert counts["num_stick"] == 1
+        assert counts["num_slip"] == 0
+        assert counts["num_total"] == 2
+        # Only the second cell's opening indicator (0.2) is within the tolerance.
+        assert counts["num_near_opening_transition"] == 1
 
 
 class TestContactStateCounts:
