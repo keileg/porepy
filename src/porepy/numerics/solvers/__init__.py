@@ -5,6 +5,7 @@ __all__ = []
 from . import (
     anderson_acceleration,
     convergence_check,
+    cycle_detection,
     equation_variable_tags,
     line_search,
     linear_solvers,
@@ -14,6 +15,7 @@ from . import (
 )
 from .anderson_acceleration import *
 from .convergence_check import *
+from .cycle_detection import *
 from .equation_variable_tags import *
 from .line_search import *
 from .linear_solvers import *
@@ -28,6 +30,7 @@ from .sequential_nonlinear_solver import *
 
 __all__.extend(anderson_acceleration.__all__)
 __all__.extend(convergence_check.__all__)
+__all__.extend(cycle_detection.__all__)
 __all__.extend(line_search.__all__)
 __all__.extend(newton_solver.__all__)
 __all__.extend(nonlinear_solvers.__all__)
