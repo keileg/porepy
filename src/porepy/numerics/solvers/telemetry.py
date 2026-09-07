@@ -240,7 +240,7 @@ iteration, per-outer-iteration, per-time-step) are added here, and validated by
 _DEFAULT_CONSTRAINT_VIOLATION_TOLERANCE = 0.3
 """Fallback when a model doesn't set `params["constraint_violation_tolerance"]`.
 
-Matches `ConstraintLineSearch.constraint_weights`'s own default (`line_search.py:744`):
+Matches `ConstraintLineSearch.constraint_weights`'s own default for the same parameter:
 `NonlinearTelemetryRecorder` reuses this same model parameter for its contact-state
 near-transition counts, so the two agree on what counts as "close to a sign change" for
 the same two indicator functions.
@@ -654,9 +654,9 @@ class NonlinearTelemetryRecorder:
         negative sliding indicator means sticking. `num_near_*_transition` additionally
         counts cells within `params["constraint_violation_tolerance"]` (default `3e-1`,
         the same model parameter `ConstraintLineSearch.constraint_weights` already uses
-        for these same two indicators, `line_search.py:744`) of a sign change, without
-        changing which side of zero a cell is classified on -- a diagnostic on top of
-        the classification, not a redefinition of it.
+        for these same two indicators) of a sign change, without changing which side of
+        zero a cell is classified on -- a diagnostic on top of the classification, not a
+        redefinition of it.
 
         """
         if not (
