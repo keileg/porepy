@@ -119,9 +119,14 @@ class TelemetryConfig:
 class NonlinearIterationRecorder(Protocol):
     """Interface for recording solver telemetry.
 
-    Implementations receive only values their callers have already computed and must
-    not trigger additional AD evaluation or system assembly. `NewtonSolver`,
-    `SequentialNonlinearSolver` and `TimeStepper` each hold an
+    Implementations must not assemble the system or solve anything: everything the
+    solver already computed is passed in, and recomputing it would both cost a full
+    assembly per iteration and risk recording a different state than the solver saw.
+    Evaluating a cheap diagnostic operator is allowed -- the contact-state fields do
+    exactly that, at two AD evaluations per iteration -- but that cost is charged to
+    every iteration of every recorded run, so it stays the exception.
+
+    `NewtonSolver`, `SequentialNonlinearSolver` and `TimeStepper` each hold an
     `Optional[NonlinearIterationRecorder]`, defaulting to `None`, in which case no
     method here is ever called.
 
