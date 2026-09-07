@@ -420,13 +420,22 @@ class NonlinearTelemetryRecorder:
     Covers the raw per-block residual fields (L-inf norm, reduction factor, argmax cell
     location; relies only on the equation/variable block structure every PorePy model
     exposes through `EquationOnDomain`/`Variable`/`EquationIndexer`), linear-solver
-    status, admissibility counts (config-declared bounds, pure counting), and two
-    duck-typed fields specific to contact-mechanics models: contact-state counts
-    (`ContactIndicators`) and line-search telemetry (`ConstraintLineSearch`'s
-    `constraint_weights` side channel). Constructing this recorder for a model that
-    doesn't expose one of these hooks simply leaves the corresponding record field
-    `null`/absent, rather than raising. Level-2 spatial fields (`.npz` sidecar) are
-    added by a later commit.
+    status, admissibility counts (config-declared bounds, pure counting), and three
+    duck-typed fields specific to contact-mechanics models: contact-state counts,
+    active-set cycle/chattering detection, and line-search telemetry. A model that
+    doesn't expose the corresponding hook simply gets `null` for that field, rather
+    than an error. Level-2 spatial fields (`.npz` sidecar) are added by a later commit.
+
+    Important:
+        The contact-state and cycle fields need `opening_indicator`/
+        `sliding_indicator`, which come from
+        :class:`~porepy.models.solution_strategy.ContactIndicators`. That is an opt-in
+        mixin: no standard model (`MomentumBalance`, `Poromechanics`,
+        `Thermoporomechanics`) includes it, so on a stock contact model both fields
+        are `null` until it is mixed in, as the shipped examples that use the
+        constraint line search do. Likewise, the line-search field only appears when
+        the solve actually runs `ConstraintLineSearch`, which writes the
+        `constraint_weights` this reads.
 
     Parameters:
         config: Telemetry configuration.

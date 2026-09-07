@@ -72,7 +72,11 @@ class TestCycleDetection:
         assert history.record(_labels(0, 1)).repeat_length is None
         assert history.record(_labels(1, 1)).repeat_length is None
 
-    def test_immediate_repeat_has_length_one(self) -> None:
+    def test_settled_active_set_repeats_with_length_one(self) -> None:
+        # A converging solve stops changing state, so every iteration after the first
+        # repeats the previous one. Length 1 is therefore the signature of a settled
+        # active set, not of cycling -- only length >= 2 means the solver left a state
+        # and came back. Anything reading these records has to make that distinction.
         history = ActiveSetHistory(window=4, flip_threshold=2)
         history.record(_labels(0, 1))
 

@@ -56,12 +56,17 @@ class CycleDetection:
         active_set_hash: Identifier of the current active set, from
             :func:`hash_active_set`.
         repeat_length: How many iterations back an identical active set was last seen,
-            or `None` if it was not seen within the retained window. A value of `k`
-            means the solver has returned to the state it held `k` iterations ago,
-            i.e. it is cycling with period `k`.
+            or `None` if it was not seen within the retained window.
+
+            Note that `1` is the signature of a *settled* active set, not of a
+            problem: a converging solve stops changing state, so consecutive
+            iterations match and every iteration after the first reports `1`. Only
+            `2` or more means the solver left a state and came back to it, which is
+            the cycling worth investigating.
         cycling_cells: Cells whose state differs from the current one at some point
             inside the detected cycle -- the cells actually driving it. Empty when
-            `repeat_length` is `None`.
+            `repeat_length` is `None`, and also when it is `1`, since a settled
+            active set has nothing in between to differ.
         num_flipped_cells: Cells whose state changed since the previous iteration.
         chattering_cells: Cells that have changed state more often than the configured
             threshold since the history was last reset.
