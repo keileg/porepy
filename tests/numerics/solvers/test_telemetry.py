@@ -11,6 +11,7 @@ with a fracture (`SquareDomainOrthogonalFractures` + `pp.MomentumBalance`).
 
 import json
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import pytest
@@ -61,7 +62,12 @@ class TestTelemetryConfig:
         assert config.equation_tags == []
         assert config.variable_tags == []
         assert config.cycle_window == 8
+        assert config.flip_threshold == 2
         assert config.admissibility_bounds == {}
+
+    def test_negative_flip_threshold_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="flip_threshold"):
+            TelemetryConfig(output_path=tmp_path, flip_threshold=-1)
 
     @pytest.mark.parametrize("verbosity", [-1, 3])
     def test_invalid_verbosity_raises(self, tmp_path: Path, verbosity: int) -> None:
@@ -977,17 +983,55 @@ def _fixed_indicator_model(
     return model
 
 
-def _record_bare_iteration(
-    recorder: NonlinearTelemetryRecorder, model: pp.PorePyModel
-) -> dict:
-    """Call `record_iteration` with everything except `model` at its simplest, and
-    return the one record written.
+def _mutable_indicator_model() -> tuple[pp.PorePyModel, Callable[..., None]]:
+    """As `_fixed_indicator_model`, but the caller can change the indicators between
+    recorded iterations -- needed to drive the solver through a repeating active set.
+
+    Returns:
+        The prepared model, and a callable setting the two indicator arrays.
 
     """
+    values = {
+        "opening": np.array([0.9, 0.9]),
+        "sliding": np.array([-0.9, -0.9]),
+    }
+
+    class MutableIndicators:
+        def opening_indicator(self, subdomains: list[pp.Grid]) -> pp.ad.Operator:
+            return _cell_array(values["opening"], subdomains)
+
+        def sliding_indicator(self, subdomains: list[pp.Grid]) -> pp.ad.Operator:
+            return _cell_array(values["sliding"], subdomains)
+
+    class Model(SquareDomainOrthogonalFractures, pp.MomentumBalance, MutableIndicators):
+        """One vertical fracture -> 2 fracture cells by default."""
+
+    model = Model({"times_to_export": []})
+    model.prepare_simulation()
+
+    def set_indicators(opening: np.ndarray, sliding: np.ndarray) -> None:
+        values["opening"] = opening
+        values["sliding"] = sliding
+
+    return model, set_indicators
+
+
+# Two distinct active sets on the default two-cell fracture, as (opening, sliding)
+# indicator pairs. They differ only in cell 0: open in A, slipping in B.
+_ACTIVE_SET_A = (np.array([-0.9, 0.9]), np.array([0.0, -0.9]))
+_ACTIVE_SET_B = (np.array([0.9, 0.9]), np.array([0.5, -0.9]))
+
+
+def _write_bare_iteration(
+    recorder: NonlinearTelemetryRecorder,
+    model: pp.PorePyModel,
+    iteration_index: int = 1,
+) -> None:
+    """Call `record_iteration` with everything except `model` at its simplest."""
     residual, equation_indexer = _full_residual_and_indexer(model)
     recorder.record_iteration(
         model=model,
-        iteration_index=1,
+        iteration_index=iteration_index,
         nonlinear_increment=np.zeros_like(residual),
         residual=residual,
         equation_indexer=equation_indexer,
@@ -996,8 +1040,14 @@ def _record_bare_iteration(
         divergence_status=ConvergenceStatusCollection(),
         convergence_info={},
     )
-    [record] = read_jsonl_records(recorder.config.output_path)
-    return record
+
+
+def _record_bare_iteration(
+    recorder: NonlinearTelemetryRecorder, model: pp.PorePyModel
+) -> dict:
+    """As `_write_bare_iteration`, returning the record just written."""
+    _write_bare_iteration(recorder, model)
+    return read_jsonl_records(recorder.config.output_path)[-1]
 
 
 class TestEvaluateContactState:
@@ -1173,3 +1223,138 @@ class TestLineSearchFields:
         record = _record_bare_iteration(recorder, model)
 
         assert record["line_search"] == {"alpha": pytest.approx(0.4)}
+
+
+class TestCycleField:
+    """Tests for the `cycle` field the recorder derives from the active-set history.
+
+    The history itself is unit-tested in `test_cycle_detection.py`; these tests cover
+    it being fed the right labels, at the right times, with inner and outer histories
+    kept apart.
+
+    """
+
+    @staticmethod
+    def _recorder(tmp_path: Path, **config_overrides) -> NonlinearTelemetryRecorder:
+        config = TelemetryConfig(
+            output_path=tmp_path / "telemetry.jsonl", **config_overrides
+        )
+        return NonlinearTelemetryRecorder(config)
+
+    def test_none_for_a_model_without_contact_indicators(self, tmp_path: Path) -> None:
+        record = _record_bare_iteration(self._recorder(tmp_path), _prepared_model())
+
+        assert record["cycle"] is None
+
+    def test_first_iteration_reports_a_hash_but_no_repeat(self, tmp_path: Path) -> None:
+        model, set_indicators = _mutable_indicator_model()
+        set_indicators(*_ACTIVE_SET_A)
+
+        record = _record_bare_iteration(self._recorder(tmp_path), model)
+
+        assert record["cycle"]["repeat_length"] is None
+        assert record["cycle"]["num_flipped_cells"] == 0
+        assert len(record["cycle"]["active_set_hash"]) == 16
+
+    def test_repeating_active_set_is_detected(self, tmp_path: Path) -> None:
+        model, set_indicators = _mutable_indicator_model()
+        recorder = self._recorder(tmp_path)
+
+        for indicators in [_ACTIVE_SET_A, _ACTIVE_SET_B, _ACTIVE_SET_A]:
+            set_indicators(*indicators)
+            _write_bare_iteration(recorder, model)
+
+        records = read_jsonl_records(tmp_path / "telemetry.jsonl")
+        assert [r["cycle"]["repeat_length"] for r in records] == [None, None, 2]
+        # Cell 0 is the one changing state inside the cycle; cell 1 never moves.
+        assert records[2]["cycle"]["cycling_cells"] == [0]
+
+    def test_chattering_cells_reported_once_over_the_threshold(
+        self, tmp_path: Path
+    ) -> None:
+        model, set_indicators = _mutable_indicator_model()
+        recorder = self._recorder(tmp_path, flip_threshold=2)
+
+        # Cell 0 flips on every iteration: three flips over four iterations.
+        for indicators in [_ACTIVE_SET_A, _ACTIVE_SET_B, _ACTIVE_SET_A, _ACTIVE_SET_B]:
+            set_indicators(*indicators)
+            _write_bare_iteration(recorder, model)
+
+        records = read_jsonl_records(tmp_path / "telemetry.jsonl")
+        assert [r["cycle"]["chattering_cells"] for r in records] == [[], [], [], [0]]
+
+    def test_before_nonlinear_loop_resets_the_inner_history(
+        self, tmp_path: Path
+    ) -> None:
+        model, set_indicators = _mutable_indicator_model()
+        recorder = self._recorder(tmp_path)
+        set_indicators(*_ACTIVE_SET_A)
+        _write_bare_iteration(recorder, model)
+
+        recorder.before_nonlinear_loop(model)
+        _write_bare_iteration(recorder, model)
+
+        records = read_jsonl_records(tmp_path / "telemetry.jsonl")
+        # Same active set, but across a loop boundary: not a cycle in either loop.
+        assert records[1]["cycle"]["repeat_length"] is None
+
+    def test_inner_reset_does_not_disturb_the_outer_history(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression test, mirroring the reduction-factor one: a subsolver starting
+        its own inner loop calls `before_nonlinear_loop` on the shared recorder, which
+        must not clear the outer loop's active-set history.
+
+        """
+        model, set_indicators = _mutable_indicator_model()
+        recorder = self._recorder(tmp_path)
+        residual, equation_indexer = _full_residual_and_indexer(model)
+
+        def record_outer(iteration_index: int) -> None:
+            recorder.record_outer_iteration(
+                model=model,
+                iteration_index=iteration_index,
+                nonlinear_increment=np.zeros_like(residual),
+                full_residual=residual,
+                equation_indexer=equation_indexer,
+                convergence_status=ConvergenceStatusCollection(),
+                divergence_status=ConvergenceStatusCollection(),
+                convergence_info={},
+            )
+
+        set_indicators(*_ACTIVE_SET_A)
+        record_outer(iteration_index=1)
+        recorder.before_nonlinear_loop(model)  # A subsolver's inner loop starting.
+        set_indicators(*_ACTIVE_SET_B)
+        record_outer(iteration_index=2)
+        recorder.before_nonlinear_loop(model)
+        set_indicators(*_ACTIVE_SET_A)
+        record_outer(iteration_index=3)
+
+        records = read_jsonl_records(tmp_path / "telemetry.jsonl")
+        assert [r["cycle"]["repeat_length"] for r in records] == [None, None, 2]
+
+    def test_outer_history_resets_on_a_new_solve(self, tmp_path: Path) -> None:
+        model, set_indicators = _mutable_indicator_model()
+        recorder = self._recorder(tmp_path)
+        residual, equation_indexer = _full_residual_and_indexer(model)
+
+        def record_outer(iteration_index: int) -> None:
+            recorder.record_outer_iteration(
+                model=model,
+                iteration_index=iteration_index,
+                nonlinear_increment=np.zeros_like(residual),
+                full_residual=residual,
+                equation_indexer=equation_indexer,
+                convergence_status=ConvergenceStatusCollection(),
+                divergence_status=ConvergenceStatusCollection(),
+                convergence_info={},
+            )
+
+        set_indicators(*_ACTIVE_SET_A)
+        record_outer(iteration_index=1)
+        record_outer(iteration_index=2)  # Would be a repeat within this solve.
+        record_outer(iteration_index=1)  # A fresh solve restarts the count.
+
+        records = read_jsonl_records(tmp_path / "telemetry.jsonl")
+        assert [r["cycle"]["repeat_length"] for r in records] == [None, 1, None]

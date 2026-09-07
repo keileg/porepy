@@ -22,6 +22,7 @@ from porepy.numerics.solvers.convergence_check import (
     ConvergenceInfoCollection,
     ConvergenceStatusCollection,
 )
+from porepy.numerics.solvers.cycle_detection import ActiveSetHistory
 from porepy.numerics.solvers.equation_variable_tags import EquationTag, VariableTag
 from porepy.numerics.solvers.linear_solvers.linear_solver import (
     LinearSolverStatus,
@@ -74,15 +75,18 @@ class TelemetryConfig:
             NewtonSolver`'s own `equation_tags` parameter.
         variable_tags: As `equation_tags`, for variable blocks.
         cycle_window: Number of trailing iteration hashes kept for cycle/chattering
-            detection.
+            detection. A cycle longer than this is not detected.
+        flip_threshold: How many contact-state changes a fracture cell may accumulate
+            within one nonlinear loop before being reported as chattering. A heuristic
+            starting point rather than a tuned value.
         admissibility_bounds: Per-variable `(lower, upper)` bounds used for read-only
             admissibility counting. Keyed by variable name; a variable absent from
             this mapping is not checked.
 
     Raises:
         ValueError: If `verbosity` is not 0, 1, or 2; if `cycle_window` is not
-            positive; or if any `admissibility_bounds` entry has a lower bound
-            exceeding its upper bound.
+            positive; if `flip_threshold` is negative; or if any
+            `admissibility_bounds` entry has a lower bound exceeding its upper bound.
 
     """
 
@@ -91,6 +95,7 @@ class TelemetryConfig:
     equation_tags: list[EquationTag] = field(default_factory=list)
     variable_tags: list[VariableTag] = field(default_factory=list)
     cycle_window: int = 8
+    flip_threshold: int = 2
     admissibility_bounds: dict[str, tuple[float, float]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -98,6 +103,10 @@ class TelemetryConfig:
             raise ValueError(f"verbosity must be 0, 1, or 2, got {self.verbosity}.")
         if self.cycle_window <= 0:
             raise ValueError(f"cycle_window must be positive, got {self.cycle_window}.")
+        if self.flip_threshold < 0:
+            raise ValueError(
+                f"flip_threshold must not be negative, got {self.flip_threshold}."
+            )
         for name, (lower, upper) in self.admissibility_bounds.items():
             if lower > upper:
                 raise ValueError(
@@ -428,26 +437,33 @@ class NonlinearTelemetryRecorder:
         self.config = config
         """Telemetry configuration."""
         self._writer = JSONLWriter(config.output_path)
-        # Kept separate, not shared: before_nonlinear_loop fires on *every*
-        # NewtonSolver.solve() call, including each subsolver of a
-        # SequentialNonlinearSolver -- multiple times per outer iteration. Resetting
-        # a single shared dict there would wipe the outer loop's "previous iteration"
-        # state out from under it every time any subsolver starts a fresh inner loop,
-        # even though the same recorder instance is meant to be shared across outer
-        # and inner calls (phase-2-plan.md §1). The inner dict is reset by
-        # before_nonlinear_loop, as its name promises; the outer dict is reset by
-        # record_outer_iteration itself, on that call's own first iteration.
+        # Inner and outer state is kept separate, never shared. One recorder instance
+        # is meant to serve both a SequentialNonlinearSolver and its subsolvers, and
+        # before_nonlinear_loop fires on *every* NewtonSolver.solve() call, including
+        # each subsolver's -- i.e. several times per outer iteration, not once per
+        # outer loop. Resetting shared state there would wipe the outer loop's own
+        # history out from under it every time any subsolver starts a fresh inner
+        # loop. So: inner state is reset by before_nonlinear_loop, as its name
+        # promises; outer state is reset by record_outer_iteration itself, on that
+        # call's own first iteration.
         self._previous_inner_block_residual_norms: dict[str, float] = {}
         self._previous_outer_block_residual_norms: dict[str, float] = {}
+        self._inner_active_sets = ActiveSetHistory(
+            window=config.cycle_window, flip_threshold=config.flip_threshold
+        )
+        self._outer_active_sets = ActiveSetHistory(
+            window=config.cycle_window, flip_threshold=config.flip_threshold
+        )
 
     def before_nonlinear_loop(self, model: pp.PorePyModel) -> None:
-        """Reset the previous-iteration residual norms used for inner reduction
-        factors (`record_iteration`). Called once per `NewtonSolver.solve()`, which
-        for a subsolver of `SequentialNonlinearSolver` is once per outer iteration,
-        not once per outer loop -- see `__init__`.
+        """Reset the state used for inner reduction factors and cycle detection
+        (`record_iteration`). Called once per `NewtonSolver.solve()`, which for a
+        subsolver of `SequentialNonlinearSolver` is once per outer iteration, not once
+        per outer loop -- see `__init__`.
 
         """
         self._previous_inner_block_residual_norms = {}
+        self._inner_active_sets.reset()
 
     def record_iteration(
         self,
@@ -482,6 +498,7 @@ class NonlinearTelemetryRecorder:
                 ),
                 "admissibility": self._admissibility_counts(model),
                 "contact_state": self._contact_state_fields(model, contact_state),
+                "cycle": _cycle_fields(self._inner_active_sets, contact_state),
                 "line_search": self._line_search_fields(model),
             }
         )
@@ -513,17 +530,19 @@ class NonlinearTelemetryRecorder:
     ) -> None:
         """Write one "outer_iteration" record. See `NonlinearIterationRecorder`.
 
-        Resets the outer reduction-factor state on `iteration_index == 1` (the first
-        outer iteration of a fresh `SequentialNonlinearSolver.solve()` call, matching
-        the off-by-one `iteration_index + 1` convention already used there) instead of
-        relying on `before_nonlinear_loop`, since that hook also fires once per
-        subsolver's own inner loop -- see `__init__`.
+        Resets the outer reduction-factor and cycle state on `iteration_index == 1`
+        (the first outer iteration of a fresh `SequentialNonlinearSolver.solve()` call,
+        matching the off-by-one `iteration_index + 1` convention already used there)
+        instead of relying on `before_nonlinear_loop`, since that hook also fires once
+        per subsolver's own inner loop -- see `__init__`.
 
         """
         if self.config.verbosity == 0:
             return
         if iteration_index == 1:
             self._previous_outer_block_residual_norms = {}
+            self._outer_active_sets.reset()
+        contact_state = evaluate_contact_state(model)
         self._writer.write_record(
             {
                 "schema_version": SCHEMA_VERSION,
@@ -539,6 +558,8 @@ class NonlinearTelemetryRecorder:
                     self._previous_outer_block_residual_norms,
                 ),
                 "admissibility": self._admissibility_counts(model),
+                "contact_state": self._contact_state_fields(model, contact_state),
+                "cycle": _cycle_fields(self._outer_active_sets, contact_state),
             }
         )
 
@@ -766,6 +787,27 @@ def contact_state_counts(state: ContactState, tolerance: float) -> dict[str, int
         "num_total": int(state.labels.size),
         "num_near_opening_transition": int(np.sum(np.abs(state.opening) < tolerance)),
         "num_near_sliding_transition": int(np.sum(np.abs(state.sliding) < tolerance)),
+    }
+
+
+def _cycle_fields(
+    history: ActiveSetHistory, state: Optional[ContactState]
+) -> Optional[dict[str, Any]]:
+    """Advance the active-set history by one iteration and report what it found.
+
+    `None` for a model without fracture contact mechanics, where there is no active
+    set to track.
+
+    """
+    if state is None:
+        return None
+    detection = history.record(state.labels)
+    return {
+        "active_set_hash": detection.active_set_hash,
+        "repeat_length": detection.repeat_length,
+        "cycling_cells": detection.cycling_cells,
+        "num_flipped_cells": detection.num_flipped_cells,
+        "chattering_cells": detection.chattering_cells,
     }
 
 
