@@ -5,6 +5,11 @@ from porepy.applications.md_grids.model_geometries import (
     SquareDomainOrthogonalFractures,
 )
 from porepy.numerics.solvers import line_search as ls
+from porepy.numerics.solvers.telemetry import (
+    NonlinearTelemetryRecorder,
+    TelemetryConfig,
+    read_jsonl_records,
+)
 
 
 class ConstraintFunctionsMomentumBalance(
@@ -74,3 +79,30 @@ def test_line_search():
         "local_line_search": True,
     }
     pp.ModelRunner(model, solver_params).run()
+
+
+def test_line_search_records_telemetry(tmp_path):
+    """The line search solver must forward a recorder to the Newton loop it inherits.
+
+    This is the only solver that produces the ``line_search`` telemetry field, since
+    that field reads the ``constraint_weights`` only ``ConstraintLineSearch`` writes.
+    A failure here means either that the recorder never reaches the loop, or that the
+    accepted relaxation factor is no longer where the recorder looks for it.
+
+    """
+    model = ConstraintFunctionsMomentumBalance({"times_to_export": []})
+    recorder = NonlinearTelemetryRecorder(
+        TelemetryConfig(output_path=tmp_path / "telemetry.jsonl")
+    )
+    solver = ls.ConstraintLineSearchNonlinearSolver(
+        {"global_line_search": True, "local_line_search": True}, telemetry=recorder
+    )
+    pp.ModelRunner(model, nonlinear_solver=solver).run()
+
+    iterations = [
+        record
+        for record in read_jsonl_records(tmp_path / "telemetry.jsonl")
+        if record["record_type"] == "iteration"
+    ]
+    assert iterations
+    assert all(record["line_search"]["alpha"] > 0 for record in iterations)

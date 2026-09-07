@@ -858,6 +858,7 @@ class ConstraintLineSearchNonlinearSolver(
         linear_solver: pp.solvers.LinearSolverBase | None = None,
         equation_tags: list[pp.solvers.EquationTag] | None = None,
         variable_tags: list[pp.solvers.VariableTag] | None = None,
+        telemetry: pp.solvers.NonlinearIterationRecorder | None = None,
     ) -> None:
         if equation_tags is not None or variable_tags is not None:
             raise ValueError(
@@ -865,5 +866,10 @@ class ConstraintLineSearchNonlinearSolver(
                 "problems with a subset of variables / equations."
             )
         super().__init__(
-            params, is_nonlinear_problem, linear_solver, equation_tags, variable_tags
+            params,
+            is_nonlinear_problem,
+            linear_solver,
+            equation_tags,
+            variable_tags,
+            telemetry,
         )
