@@ -25,13 +25,20 @@ def _iteration(
     linear_solve_succeeded: bool = True,
     diverged: bool = False,
     residual: float = 1.0,
-    relative_increment: Optional[float] = None,
+    relative_increment: Optional[float | dict[str, float]] = None,
     violations: int = 0,
     flips: int = 0,
     cycling: bool = False,
     aperture_change: Optional[float] = None,
 ) -> dict[str, Any]:
-    """An iteration record with only the fields the classification reads."""
+    """An iteration record with only the fields the classification reads.
+
+    `relative_increment` is either one value, for a single temperature block, or a
+    value per block.
+
+    """
+    if isinstance(relative_increment, float):
+        relative_increment = {"temperature": relative_increment}
     return {
         "record_type": "iteration",
         "iteration_index": index,
@@ -42,10 +49,8 @@ def _iteration(
             None
             if relative_increment is None
             else {
-                "temperature": {
-                    "increment_inf_norm": relative_increment * 300.0,
-                    "value_inf_norm": 300.0,
-                }
+                name: {"increment_inf_norm": value * 300.0, "value_inf_norm": 300.0}
+                for name, value in relative_increment.items()
             }
         ),
         "admissibility": {"temperature": {"num_below": violations, "num_above": 0}},
@@ -186,38 +191,76 @@ class TestContactLabels:
         }
 
 
-class TestLaggedCoupling:
-    @staticmethod
-    def _labels(increments: list[float], flips: Optional[list[int]] = None) -> dict:
-        flips = flips or [0] * len(increments)
-        _, labels = _classify_one(
-            [
-                _iteration(i + 1, relative_increment=value, flips=flip)
-                for i, (value, flip) in enumerate(zip(increments, flips))
-            ],
-            successful=True,
-        )
-        return labels
+def _costly_attempt_labels(
+    increments: list[dict[str, float]], flips: Optional[list[int]] = None
+) -> dict[str, dict[str, Any]]:
+    """Labels of an expensive accepted attempt with the given relative increments per
+    block and iteration."""
+    flips = flips or [0] * len(increments)
+    _, labels = _classify_one(
+        [
+            _iteration(i + 1, relative_increment=values, flips=flip)
+            for i, (values, flip) in enumerate(zip(increments, flips))
+        ],
+        successful=True,
+    )
+    return labels
 
-    def test_linear_convergence(self) -> None:
-        evidence = self._labels([1e-3 * 0.2**k for k in range(6)])["C-lag"]
-        assert evidence["block"] == "temperature"
-        assert evidence["rate"] == pytest.approx(0.2)
-        assert evidence["order"] == pytest.approx(1.0)
+
+def _linear(rate: float, length: int = 6) -> list[float]:
+    return [1e-3 * rate**k for k in range(length)]
+
+
+class TestLaggedCoupling:
+    def test_most_blocks_linear(self) -> None:
+        increments = [
+            {"u": u, "pressure": p}
+            for u, p in zip(_linear(0.2), _linear(0.3), strict=True)
+        ]
+        evidence = _costly_attempt_labels(increments)["C-lag"]
+        assert evidence["linear_blocks"] == ["pressure", "u"]
+        assert evidence["assessed_blocks"] == 2
+        assert evidence["median_rate"] == pytest.approx(0.25)
 
     def test_quadratic_convergence_is_not_labelled(self) -> None:
-        assert "C-lag" not in self._labels([1e-1, 1e-2, 1e-4, 1e-8, 1e-12])
+        quadratic = [1e-1, 1e-2, 1e-4, 1e-8, 1e-12]
+        increments = [{"u": value, "pressure": value} for value in quadratic]
+        assert "C-lag" not in _costly_attempt_labels(increments)
+
+    def test_one_linear_block_among_several_is_not_enough(self) -> None:
+        quadratic = [1e-1, 1e-2, 1e-4, 1e-8, 1e-12, 1e-13]
+        increments = [
+            {"u": linear, "pressure": fast, "temperature": fast}
+            for linear, fast in zip(_linear(0.2), quadratic, strict=True)
+        ]
+        assert "C-lag" not in _costly_attempt_labels(increments)
 
     def test_only_the_tail_after_the_last_flip_counts(self) -> None:
         # Linear throughout, but contact states change until the fourth iteration,
         # leaving a settled tail too short to judge.
-        increments = [1e-3 * 0.2**k for k in range(6)]
-        labels = self._labels(increments, flips=[3, 3, 3, 3, 0, 0])
+        increments = [{"u": u, "pressure": u} for u in _linear(0.2)]
+        labels = _costly_attempt_labels(increments, flips=[3, 3, 3, 3, 0, 0])
         assert "C-lag" not in labels
 
-    def test_round_off_is_left_out(self) -> None:
-        # Two linear steps, then the block sits at round-off: too little to judge.
-        assert "C-lag" not in self._labels([1e-3, 2e-4, 4e-5, 1e-16, 1e-16, 1e-16])
+
+class TestOscillation:
+    def test_alternating_block(self) -> None:
+        values = [1e-3, 1e-1, 1e-3, 1e-1, 1e-3]
+        labels = _costly_attempt_labels([{"temperature": v} for v in values])
+        assert labels["O"] == {"alternating_steps_by_block": {"temperature": 4}}
+
+    @pytest.mark.parametrize(
+        "values",
+        [
+            # Monotone decrease.
+            [1e-1, 1e-2, 1e-3, 1e-4, 1e-5],
+            # Alternating, but by a factor too small to matter.
+            [1e-3, 2e-3, 1e-3, 2e-3, 1e-3],
+        ],
+    )
+    def test_no_oscillation(self, values: list[float]) -> None:
+        labels = _costly_attempt_labels([{"temperature": v} for v in values])
+        assert "O" not in labels
 
 
 class TestAmplification:

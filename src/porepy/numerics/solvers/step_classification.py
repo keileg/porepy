@@ -13,8 +13,10 @@ Mechanism labels, checked for costly attempts only:
 - ``D``: an iterate violated a declared variable bound.
 - ``A``: contact states cycled, or kept flipping while the iteration made no progress.
 - ``T``: many contact states changed, without the stagnation of ``A``.
-- ``C-lag``: once the contact state had settled, some variable block converged only
-  linearly, the signature of a coupling the Jacobian lags.
+- ``C-lag``: once the contact state had settled, most variable blocks converged only
+  linearly, at a steady rate, the signature of a coupling the Jacobian lags.
+- ``O``: once the contact state had settled, some variable block's increment
+  alternated up and down by large factors instead of decreasing.
 - ``C-amp``: the attempt blew up while fracture aperture or permeability changed by a
   large factor within one iteration.
 
@@ -72,12 +74,24 @@ class ClassificationThresholds:
         significant_increment: Relative increment a block must exceed at the start of
             the settled tail to be assessed at all; smaller blocks carry no information
             about the rate.
-        linear_tail_points: Increment ratios needed on the settled tail for ``C-lag``.
-        linear_rate_range: Median ratio of successive relative increments within which
-            convergence counts as linear (``C-lag``). Below the range it is fast enough
-            not to matter, above it the block is stagnating rather than converging.
-        linear_order_range: Median estimated convergence order within which convergence
-            counts as linear (``C-lag``). Newton's quadratic convergence gives about 2.
+        linear_tail_points: Increment ratios needed on a block's settled tail before
+            its convergence is assessed (``C-lag``).
+        linear_fit: Smallest coefficient of determination of a straight-line fit to the
+            logarithm of a block's relative increments for the decay to count as steady
+            (``C-lag``). Oscillating or erratic sequences fall below it.
+        linear_rate_range: Range of the fitted reduction per iteration within which a
+            steady decay counts as linear convergence (``C-lag``). Below the range it
+            gains two orders of magnitude per iteration, too fast to cost iterations
+            and indistinguishable from Newton's own convergence ending at round-off;
+            above it the block is barely converging.
+        linear_order_limit: Largest median ratio of successive logarithmic decrements
+            for the decay to count as linear rather than accelerating; Newton's
+            quadratic convergence doubles the decrement every iteration (``C-lag``).
+        linear_block_fraction: Fraction of the assessed blocks that must converge
+            linearly for ``C-lag``. A single linear block is as likely to be noise.
+        oscillation_factor: Factor by which a block's relative increment must jump, up
+            or down, for a step to count towards an oscillation (``O``).
+        oscillation_steps: Consecutive alternating jumps needed for ``O``.
         amplification_factor: Factor by which fracture aperture or permeability must
             change in some cell within one iteration for ``C-amp``.
         insensitivity_dt_factor: Factor by which the step size must shrink over a run
@@ -99,8 +113,12 @@ class ClassificationThresholds:
     round_off: float = 1e-14
     significant_increment: float = 1e-10
     linear_tail_points: int = 3
-    linear_rate_range: tuple[float, float] = (1e-3, 0.7)
-    linear_order_range: tuple[float, float] = (0.6, 1.4)
+    linear_fit: float = 0.9
+    linear_rate_range: tuple[float, float] = (1e-2, 0.5)
+    linear_order_limit: float = 1.5
+    linear_block_fraction: float = 0.5
+    oscillation_factor: float = 5.0
+    oscillation_steps: int = 3
     amplification_factor: float = 2.0
     insensitivity_dt_factor: float = 8.0
     largest_controller_cut: float = 10.0
@@ -112,7 +130,7 @@ class Label:
     """A mechanism label and the recorded numbers that triggered it."""
 
     code: str
-    """One of ``L``, ``K``, ``D``, ``A``, ``T``, ``C-lag``, ``C-amp``."""
+    """One of ``L``, ``K``, ``D``, ``A``, ``T``, ``C-lag``, ``O``, ``C-amp``."""
     evidence: dict[str, Any]
     """The quantities the rule tested, by name."""
 
@@ -252,6 +270,7 @@ def _mechanism_labels(
         active_set,
         None if active_set else _transition_label(iterations, thresholds),
         _lagged_coupling_label(iterations, thresholds),
+        _oscillation_label(iterations, thresholds),
         _amplification_label(iterations, thresholds) if blow_up else None,
     ]
     return [label for label in candidates if label is not None]
@@ -421,71 +440,123 @@ def _transition_label(
 def _lagged_coupling_label(
     iterations: list[dict[str, Any]], thresholds: ClassificationThresholds
 ) -> Optional[Label]:
-    """Linear convergence of some variable block once contact has settled.
+    """Steady linear convergence of most variable blocks once contact has settled.
 
     The settled tail is the iterations after the last one in which a contact state
-    changed; before that, slow convergence is the active set's doing. Of the blocks that
-    converge linearly there, the one with the slowest rate is reported.
+    changed; before that, slow convergence is the active set's doing. A lagged coupling
+    slows the whole coupled system alike, so the rule asks for most blocks to decay
+    linearly, not one.
 
     """
-    tail = _settled_tail(iterations)
-    if not tail:
+    sequences = _settled_relative_increments(iterations, thresholds)
+    assessed = {
+        name: _linear_decay(values, thresholds) for name, values in sequences.items()
+    }
+    linear = {name: rate for name, rate in assessed.items() if rate is not None}
+    if len(assessed) < 2 or len(linear) < thresholds.linear_block_fraction * len(
+        assessed
+    ):
         return None
-    slowest: Optional[dict[str, Any]] = None
-    for name in tail[0].get("increments") or {}:
-        estimate = _linear_convergence(tail, name, thresholds)
-        if estimate is not None and (
-            slowest is None or estimate["rate"] > slowest["rate"]
-        ):
-            slowest = {"block": name, **estimate}
-    if slowest is None:
-        return None
-    return Label("C-lag", slowest)
+    return Label(
+        "C-lag",
+        {
+            "median_rate": float(np.median(list(linear.values()))),
+            "linear_blocks": sorted(linear),
+            "assessed_blocks": len(assessed),
+        },
+    )
 
 
-def _settled_tail(iterations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _settled_relative_increments(
+    iterations: list[dict[str, Any]], thresholds: ClassificationThresholds
+) -> dict[str, list[float]]:
+    """Each significant block's relative increments over the settled tail, above
+    round-off, for blocks with enough of them to assess."""
     last_flip = -1
     for position, record in enumerate(iterations):
         if (record.get("cycle") or {}).get("num_flipped_cells", 0) > 0:
             last_flip = position
-    return iterations[last_flip + 1 :]
+    tail = iterations[last_flip + 1 :]
+    sequences: dict[str, list[float]] = {}
+    for name in (tail[0].get("increments") or {}) if tail else {}:
+        values = [
+            norms["increment_inf_norm"] / norms["value_inf_norm"]
+            for norms in ((record.get("increments") or {}).get(name) for record in tail)
+            if norms is not None and norms["value_inf_norm"] > 0
+        ]
+        values = [value for value in values if value > thresholds.round_off]
+        if (
+            len(values) > thresholds.linear_tail_points
+            and values[0] >= thresholds.significant_increment
+        ):
+            sequences[name] = values
+    return sequences
 
 
-def _linear_convergence(
-    tail: list[dict[str, Any]], name: str, thresholds: ClassificationThresholds
-) -> Optional[dict[str, Any]]:
-    """Median rate and order of one block's relative increments over the tail, if they
-    lie in the linear ranges; otherwise `None`."""
-    relative = []
-    for record in tail:
-        norms = (record.get("increments") or {}).get(name)
-        if norms is None or norms["value_inf_norm"] <= 0:
-            return None
-        relative.append(norms["increment_inf_norm"] / norms["value_inf_norm"])
-    relative = [value for value in relative if value > thresholds.round_off]
+def _linear_decay(
+    values: list[float], thresholds: ClassificationThresholds
+) -> Optional[float]:
+    """The reduction per iteration of a steady, non-accelerating decay; `None` if the
+    decay is erratic, accelerating, or outside the linear range."""
+    logs = np.log(values)
+    steps = np.arange(len(logs))
+    slope, intercept = np.polyfit(steps, logs, 1)
+    residual = logs - (slope * steps + intercept)
+    spread = np.sum((logs - logs.mean()) ** 2)
+    fit = 1.0 - np.sum(residual**2) / spread if spread > 0 else 0.0
+    decrements = -np.diff(logs)
+    accelerations = decrements[1:] / decrements[:-1]
+    rate = float(np.exp(slope))
+    low, high = thresholds.linear_rate_range
     if (
-        len(relative) < thresholds.linear_tail_points + 1
-        or relative[0] < thresholds.significant_increment
+        fit >= thresholds.linear_fit
+        and low <= rate <= high
+        and np.all(decrements > 0)
+        and np.median(accelerations) <= thresholds.linear_order_limit
     ):
-        return None
-    ratios = np.array(relative[1:]) / np.array(relative[:-1])
-    orders = np.log(ratios[1:]) / np.log(ratios[:-1])
-    rate = float(np.median(ratios))
-    order = float(np.median(orders))
-    low_rate, high_rate = thresholds.linear_rate_range
-    low_order, high_order = thresholds.linear_order_range
-    if low_rate <= rate <= high_rate and low_order <= order <= high_order:
-        return {"rate": rate, "order": order, "tail_points": len(relative)}
+        return rate
     return None
+
+
+def _oscillation_label(
+    iterations: list[dict[str, Any]], thresholds: ClassificationThresholds
+) -> Optional[Label]:
+    """Blocks whose settled relative increments alternate up and down by large
+    factors, and the longest such alternation."""
+    oscillating: dict[str, int] = {}
+    for name, values in _settled_relative_increments(iterations, thresholds).items():
+        longest = _longest_alternation(values, thresholds.oscillation_factor)
+        if longest >= thresholds.oscillation_steps:
+            oscillating[name] = longest
+    if not oscillating:
+        return None
+    return Label("O", {"alternating_steps_by_block": oscillating})
+
+
+def _longest_alternation(values: list[float], factor: float) -> int:
+    """Longest run of consecutive jumps by at least `factor`, alternating in
+    direction."""
+    longest, current, previous_direction = 0, 0, 0
+    for before, after in zip(values[:-1], values[1:]):
+        ratio = after / before
+        direction = 1 if ratio >= factor else -1 if ratio <= 1.0 / factor else 0
+        if direction != 0 and direction != previous_direction:
+            current = current + 1 if previous_direction != 0 else 1
+        else:
+            current = 1 if direction != 0 else 0
+        previous_direction = direction
+        longest = max(longest, current)
+    return longest
 
 
 def _amplification_label(
     iterations: list[dict[str, Any]], thresholds: ClassificationThresholds
 ) -> Optional[Label]:
     """The largest one-iteration change of fracture aperture or permeability, if it
-    reaches the amplification factor."""
+    reaches the amplification factor. As for ``D``, changes at or after a failed linear
+    solve are that failure's consequence and are left out."""
     largest: Optional[dict[str, Any]] = None
-    for record in iterations:
+    for record in _before_first_failed_solve(iterations):
         for quantity, fields in (record.get("fracture_flow") or {}).items():
             factor = (fields or {}).get("max_change_factor")
             if factor is not None and (largest is None or factor > largest["factor"]):
