@@ -118,6 +118,7 @@ class _FakeRecorder:
         nonlinear_increment,
         residual,
         equation_indexer,
+        variable_indexer,
         linear_solver_status,
         convergence_status,
         divergence_status,
@@ -132,6 +133,7 @@ class _FakeRecorder:
                     nonlinear_increment,
                     residual,
                     equation_indexer,
+                    variable_indexer,
                     linear_solver_status,
                     convergence_status,
                     divergence_status,
@@ -223,6 +225,8 @@ class TestNonlinearIterationRecorderInvocation:
         equation = pp.ad.EquationOnDomain("mass_balance_equation", domain)
         residual = np.array([1.0, 2.0, 3.0])
         equation_indexer = pp.ad.EquationIndexer(indices={equation: np.arange(3)})
+        variable = pp.ad.Variable("pressure", {pp.ad.GridEntity.cells: 1}, domain)
+        variable_indexer = pp.ad.VariableIndexer(indices={variable: np.arange(3)})
 
         recorder.record_iteration(
             model=model,
@@ -230,6 +234,7 @@ class TestNonlinearIterationRecorderInvocation:
             nonlinear_increment=nonlinear_increment,
             residual=residual,
             equation_indexer=equation_indexer,
+            variable_indexer=variable_indexer,
             linear_solver_status=linear_solver_status,
             convergence_status=convergence_status,
             divergence_status=divergence_status,
@@ -244,6 +249,7 @@ class TestNonlinearIterationRecorderInvocation:
             recorded_increment,
             recorded_residual,
             recorded_equation_indexer,
+            recorded_variable_indexer,
             recorded_linear_status,
             recorded_convergence_status,
             recorded_divergence_status,
@@ -254,6 +260,7 @@ class TestNonlinearIterationRecorderInvocation:
         np.testing.assert_array_equal(recorded_increment, nonlinear_increment)
         np.testing.assert_array_equal(recorded_residual, residual)
         assert recorded_equation_indexer is equation_indexer
+        assert recorded_variable_indexer is variable_indexer
         assert recorded_linear_status is linear_solver_status
         assert recorded_convergence_status is convergence_status
         assert recorded_divergence_status is divergence_status
@@ -536,6 +543,7 @@ class TestNonlinearTelemetryRecorder:
             nonlinear_increment=np.zeros_like(residual),
             residual=residual,
             equation_indexer=equation_indexer,
+            variable_indexer=model.equation_system.variable_indexer,
             linear_solver_status=LinearSolverStatusSuccess(solve_time=0.02),
             convergence_status=ConvergenceStatusCollection(
                 {"res_abs": ConvergenceStatus.CONTINUE_ITERATING}
@@ -578,6 +586,7 @@ class TestNonlinearTelemetryRecorder:
                 nonlinear_increment=np.zeros_like(residual),
                 residual=residual,
                 equation_indexer=model.equation_system.equation_indexer,
+                variable_indexer=model.equation_system.variable_indexer,
                 linear_solver_status=LinearSolverStatusSuccess(solve_time=0.0),
                 convergence_status=ConvergenceStatusCollection(),
                 divergence_status=ConvergenceStatusCollection(),
@@ -607,6 +616,7 @@ class TestNonlinearTelemetryRecorder:
             nonlinear_increment=np.zeros_like(residual),
             residual=residual,
             equation_indexer=equation_indexer,
+            variable_indexer=model.equation_system.variable_indexer,
             linear_solver_status=LinearSolverStatusSuccess(solve_time=0.0),
             convergence_status=ConvergenceStatusCollection(),
             divergence_status=ConvergenceStatusCollection(),
@@ -619,6 +629,7 @@ class TestNonlinearTelemetryRecorder:
             nonlinear_increment=np.zeros_like(residual),
             residual=residual,
             equation_indexer=equation_indexer,
+            variable_indexer=model.equation_system.variable_indexer,
             linear_solver_status=LinearSolverStatusSuccess(solve_time=0.0),
             convergence_status=ConvergenceStatusCollection(),
             divergence_status=ConvergenceStatusCollection(),
@@ -710,6 +721,7 @@ class TestNonlinearTelemetryRecorder:
             nonlinear_increment=np.zeros_like(residual),
             residual=residual,
             equation_indexer=equation_indexer,
+            variable_indexer=model.equation_system.variable_indexer,
             linear_solver_status=LinearSolverStatusSuccess(solve_time=0.0),
             convergence_status=ConvergenceStatusCollection(),
             divergence_status=ConvergenceStatusCollection(),
@@ -751,6 +763,7 @@ class TestNonlinearTelemetryRecorder:
             nonlinear_increment=np.zeros_like(residual),
             residual=residual,
             equation_indexer=equation_indexer,
+            variable_indexer=model.equation_system.variable_indexer,
             linear_solver_status=LinearSolverStatusSuccess(solve_time=0.0),
             convergence_status=ConvergenceStatusCollection(),
             divergence_status=ConvergenceStatusCollection(),
@@ -842,6 +855,7 @@ class TestNonlinearTelemetryRecorder:
             nonlinear_increment=np.zeros_like(residual),
             residual=residual,
             equation_indexer=equation_indexer,
+            variable_indexer=model.equation_system.variable_indexer,
             linear_solver_status=LinearSolverStatusFailure(reason="singular matrix"),
             convergence_status=ConvergenceStatusCollection(),
             divergence_status=ConvergenceStatusCollection(),
@@ -867,6 +881,7 @@ class TestNonlinearTelemetryRecorder:
             nonlinear_increment=np.zeros_like(residual),
             residual=residual,
             equation_indexer=equation_indexer,
+            variable_indexer=model.equation_system.variable_indexer,
             linear_solver_status=LinearSolverStatusSuccess(solve_time=0.0),
             convergence_status=ConvergenceStatusCollection(),
             divergence_status=ConvergenceStatusCollection(),
@@ -890,6 +905,7 @@ class TestNonlinearTelemetryRecorder:
             nonlinear_increment=np.zeros_like(residual),
             residual=residual,
             equation_indexer=equation_indexer,
+            variable_indexer=model.equation_system.variable_indexer,
             linear_solver_status=LinearSolverStatusSuccess(solve_time=0.0),
             convergence_status=ConvergenceStatusCollection(),
             divergence_status=ConvergenceStatusCollection(),
@@ -944,6 +960,7 @@ class TestNonlinearTelemetryRecorder:
                 nonlinear_increment=np.zeros_like(residual),
                 residual=residual,
                 equation_indexer=equation_indexer,
+                variable_indexer=model.equation_system.variable_indexer,
                 linear_solver_status=LinearSolverStatusSuccess(solve_time=0.0),
                 convergence_status=ConvergenceStatusCollection(),
                 divergence_status=ConvergenceStatusCollection(),
@@ -1035,6 +1052,7 @@ def _write_bare_iteration(
         nonlinear_increment=np.zeros_like(residual),
         residual=residual,
         equation_indexer=equation_indexer,
+        variable_indexer=model.equation_system.variable_indexer,
         linear_solver_status=LinearSolverStatusSuccess(solve_time=0.0),
         convergence_status=ConvergenceStatusCollection(),
         divergence_status=ConvergenceStatusCollection(),
@@ -1048,6 +1066,78 @@ def _record_bare_iteration(
     """As `_write_bare_iteration`, returning the record just written."""
     _write_bare_iteration(recorder, model)
     return read_jsonl_records(recorder.config.output_path)[-1]
+
+
+class TestIncrementFields:
+    """Per-variable-block increment and iterate norms in the "iteration" record.
+
+    A failure most likely means the increment is sliced against the wrong layout, which
+    for a solver restricted to some variables silently attributes one block's increment
+    to another.
+
+    """
+
+    @staticmethod
+    def _record(
+        tmp_path: Path,
+        model: pp.PorePyModel,
+        increment: np.ndarray,
+        variable_indexer: pp.ad.VariableIndexer,
+    ) -> dict:
+        recorder = NonlinearTelemetryRecorder(
+            TelemetryConfig(output_path=tmp_path / "telemetry.jsonl")
+        )
+        residual, equation_indexer = _full_residual_and_indexer(model)
+        recorder.record_iteration(
+            model=model,
+            iteration_index=1,
+            nonlinear_increment=increment,
+            residual=residual,
+            equation_indexer=equation_indexer,
+            variable_indexer=variable_indexer,
+            linear_solver_status=LinearSolverStatusSuccess(solve_time=0.0),
+            convergence_status=ConvergenceStatusCollection(),
+            divergence_status=ConvergenceStatusCollection(),
+            convergence_info={},
+        )
+        return read_jsonl_records(tmp_path / "telemetry.jsonl")[-1]
+
+    def test_norms_of_increment_and_iterate(self, tmp_path: Path) -> None:
+        model = _prepared_model()
+        model.equation_system.set_variable_values(
+            np.array([1.0, -5.0, 2.0, 3.0]), variables=["pressure"], iterate_index=0
+        )
+        increment = np.array([0.1, 0.0, -0.4, 0.2])
+
+        record = self._record(
+            tmp_path, model, increment, model.equation_system.variable_indexer
+        )
+
+        assert record["increments"] == {
+            "pressure": {"increment_inf_norm": 0.4, "value_inf_norm": 5.0}
+        }
+
+    def test_restricted_layout(self, tmp_path: Path) -> None:
+        model = pp.MassAndEnergyBalance({"times_to_export": []})
+        model.prepare_simulation()
+        equation_system = model.equation_system
+        temperatures = equation_system.get_variables(["temperature"])
+        equation_system.set_variable_values(
+            np.full(equation_system.dofs_of(temperatures).size, 300.0),
+            variables=temperatures,
+            iterate_index=0,
+        )
+        restricted = pp.ad.construct_matching_restricted_indexer(
+            equation_system.variable_indexer, temperatures
+        )
+        increment = np.zeros(equation_system.dofs_of(temperatures).size)
+        increment[-1] = -7.0
+
+        record = self._record(tmp_path, model, increment, restricted)
+
+        assert record["increments"] == {
+            "temperature": {"increment_inf_norm": 7.0, "value_inf_norm": 300.0}
+        }
 
 
 class TestEvaluateContactState:

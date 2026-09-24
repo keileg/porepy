@@ -153,6 +153,7 @@ class NonlinearIterationRecorder(Protocol):
         nonlinear_increment: np.ndarray,
         residual: np.ndarray,
         equation_indexer: pp.ad.EquationIndexer,
+        variable_indexer: pp.ad.VariableIndexer,
         linear_solver_status: LinearSolverStatus,
         convergence_status: ConvergenceStatusCollection,
         divergence_status: ConvergenceStatusCollection,
@@ -175,6 +176,8 @@ class NonlinearIterationRecorder(Protocol):
                 order `residual` was assembled in. Slicing per-block values must go
                 through this indexer, not `model.equation_system.equation_indexer`,
                 whenever this solver is scoped to fewer than all equations.
+            variable_indexer: As `equation_indexer`, for the variables: its block
+                offsets match `nonlinear_increment`'s layout.
             linear_solver_status: Status returned by the linear solve for this
                 iteration.
             convergence_status: Per-criterion convergence status for this iteration.
@@ -423,10 +426,11 @@ class NonlinearTelemetryRecorder:
     """Concrete `NonlinearIterationRecorder`, writing JSONL to `config.output_path`.
 
     Covers the raw per-block residual fields (L-inf norm, reduction factor, argmax cell
-    location; relies only on the equation/variable block structure every PorePy model
-    exposes through `EquationOnDomain`/`Variable`/`EquationIndexer`), linear-solver
-    status, admissibility counts (config-declared bounds, pure counting), and three
-    duck-typed fields specific to contact-mechanics models: contact-state counts,
+    location), per-variable-block increment and iterate norms (both rely only on the
+    equation/variable block structure every PorePy model exposes through
+    `EquationOnDomain`/`Variable`/`EquationIndexer`), linear-solver status,
+    admissibility counts (config-declared bounds, pure counting), and three duck-typed
+    fields specific to contact-mechanics models: contact-state counts,
     active-set cycle/chattering detection, and line-search telemetry. A model that
     doesn't expose the corresponding hook simply gets `null` for that field, rather
     than an error. Level-2 spatial fields (`.npz` sidecar) are added by a later commit.
@@ -486,6 +490,7 @@ class NonlinearTelemetryRecorder:
         nonlinear_increment: np.ndarray,
         residual: np.ndarray,
         equation_indexer: pp.ad.EquationIndexer,
+        variable_indexer: pp.ad.VariableIndexer,
         linear_solver_status: LinearSolverStatus,
         convergence_status: ConvergenceStatusCollection,
         divergence_status: ConvergenceStatusCollection,
@@ -509,6 +514,9 @@ class NonlinearTelemetryRecorder:
                     residual,
                     equation_indexer,
                     self._previous_inner_block_residual_norms,
+                ),
+                "increments": self._increment_fields(
+                    model, nonlinear_increment, variable_indexer
                 ),
                 "admissibility": self._admissibility_counts(model),
                 "contact_state": self._contact_state_fields(model, contact_state),
@@ -658,6 +666,56 @@ class NonlinearTelemetryRecorder:
                 ),
             }
         return fields
+
+    def _increment_fields(
+        self,
+        model: pp.PorePyModel,
+        nonlinear_increment: np.ndarray,
+        variable_indexer: pp.ad.VariableIndexer,
+    ) -> dict[str, dict[str, float]]:
+        """Per-variable-block L-inf norms of the increment and of the updated iterate.
+
+        Successive increment norms of a block give its observed convergence rate, and
+        unlike residual norms they are not held up by a round-off floor until the
+        increment itself reaches round-off relative to the iterate, which the second
+        norm makes visible.
+
+        Parameters:
+            model: The model being solved, holding the iterate after the increment.
+            nonlinear_increment: The increment, laid out as `variable_indexer`.
+            variable_indexer: Indexer whose block offsets match `nonlinear_increment`.
+
+        """
+        if self.config.variable_tags:
+            selected, _ = variable_indexer.filter_by_tags(
+                tags=self.config.variable_tags, model=model
+            )
+            selected_variables = set(selected)
+        else:
+            selected_variables = set(variable_indexer.indices)
+
+        iterate = model.equation_system.get_variable_values(iterate_index=0)
+        full_indices = model.equation_system.variable_indexer.indices
+        increment_parts: dict[str, list[np.ndarray]] = {}
+        iterate_parts: dict[str, list[np.ndarray]] = {}
+        for variable, indices in variable_indexer.indices.items():
+            if variable not in selected_variables or indices.size == 0:
+                continue
+            increment_parts.setdefault(variable.name, []).append(
+                nonlinear_increment[indices]
+            )
+            iterate_parts.setdefault(variable.name, []).append(
+                iterate[full_indices[variable]]
+            )
+        return {
+            name: {
+                "increment_inf_norm": float(np.max(np.abs(np.concatenate(parts)))),
+                "value_inf_norm": float(
+                    np.max(np.abs(np.concatenate(iterate_parts[name])))
+                ),
+            }
+            for name, parts in increment_parts.items()
+        }
 
     def _argmax_location(
         self,

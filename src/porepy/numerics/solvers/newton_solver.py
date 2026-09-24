@@ -521,6 +521,10 @@ class NewtonSolver(NonlinearSolverBase):
                             model.equation_system.equation_indexer,
                             self.get_active_equations(model),
                         ),
+                        variable_indexer=pp.ad.construct_matching_restricted_indexer(
+                            model.equation_system.variable_indexer,
+                            self.get_active_variables(model),
+                        ),
                         linear_solver_status=linear_solver_status,
                         convergence_status=convergence_status,
                         divergence_status=divergence_status,
