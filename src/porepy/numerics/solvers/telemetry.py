@@ -13,7 +13,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Optional, Protocol, cast, runtime_checkable
 
 import numpy as np
 
@@ -56,6 +56,9 @@ __all__ = [
     "evaluate_contact_state",
     "contact_state_counts",
     "contact_state_counts_by_subdomain",
+    "FractureFlowProperties",
+    "evaluate_fracture_flow_properties",
+    "property_change_fields",
 ]
 
 
@@ -430,11 +433,13 @@ class NonlinearTelemetryRecorder:
     location), per-variable-block increment and iterate norms (both rely only on the
     equation/variable block structure every PorePy model exposes through
     `EquationOnDomain`/`Variable`/`EquationIndexer`), linear-solver status,
-    admissibility counts (config-declared bounds, pure counting), and three duck-typed
-    fields specific to contact-mechanics models: contact-state counts,
-    active-set cycle/chattering detection, and line-search telemetry. A model that
-    doesn't expose the corresponding hook simply gets `null` for that field, rather
-    than an error. Level-2 spatial fields (`.npz` sidecar) are added by a later commit.
+    admissibility counts (config-declared bounds, pure counting), the range and largest
+    per-iteration change of fracture aperture and permeability for a fractured model,
+    and three duck-typed fields specific to contact-mechanics models: contact-state
+    counts, active-set cycle/chattering detection, and line-search telemetry. A model
+    that doesn't expose the corresponding hook simply gets `null` for that field,
+    rather than an error. Level-2 spatial fields (`.npz` sidecar) are added by a later
+    commit.
 
     Important:
         The contact-state and cycle fields need `opening_indicator`/
@@ -470,19 +475,23 @@ class NonlinearTelemetryRecorder:
         self._inner_active_sets = ActiveSetHistory(
             window=config.cycle_window, flip_threshold=config.flip_threshold
         )
+        # Fracture aperture and permeability at the previous inner iteration, or at the
+        # start of the loop before its first iteration.
+        self._previous_fracture_flow: Optional[FractureFlowProperties] = None
         self._outer_active_sets = ActiveSetHistory(
             window=config.cycle_window, flip_threshold=config.flip_threshold
         )
 
     def before_nonlinear_loop(self, model: pp.PorePyModel) -> None:
-        """Reset the state used for inner reduction factors and cycle detection
-        (`record_iteration`). Called once per `NewtonSolver.solve()`, which for a
-        subsolver of `SequentialNonlinearSolver` is once per outer iteration, not once
-        per outer loop -- see `__init__`.
+        """Reset the state used for inner reduction factors, cycle detection and
+        fracture property changes (`record_iteration`). Called once per
+        `NewtonSolver.solve()`, which for a subsolver of `SequentialNonlinearSolver` is
+        once per outer iteration, not once per outer loop -- see `__init__`.
 
         """
         self._previous_inner_block_residual_norms = {}
         self._inner_active_sets.reset()
+        self._previous_fracture_flow = evaluate_fracture_flow_properties(model)
 
     def record_iteration(
         self,
@@ -522,9 +531,44 @@ class NonlinearTelemetryRecorder:
                 "admissibility": self._admissibility_counts(model),
                 "contact_state": self._contact_state_fields(model, contact_state),
                 "cycle": _cycle_fields(self._inner_active_sets, contact_state),
+                "fracture_flow": self._fracture_flow_fields(model),
                 "line_search": self._line_search_fields(model),
             }
         )
+
+    def _fracture_flow_fields(
+        self, model: pp.PorePyModel
+    ) -> Optional[dict[str, Optional[dict[str, Any]]]]:
+        """Fracture aperture and permeability, and their largest change since the
+        previous iteration; `None` for a model without fractures.
+
+        These trace the shear dilation -> aperture -> permeability coupling, which can
+        amplify a Newton step or, when the flux discretisation lags it, make Newton
+        converge linearly. Costs two operator evaluations per iteration.
+
+        """
+        current = evaluate_fracture_flow_properties(model)
+        if current is None:
+            return None
+        previous = self._previous_fracture_flow
+        self._previous_fracture_flow = current
+        fractures = model.mdg.subdomains(dim=model.nd - 1)
+        return {
+            "aperture": property_change_fields(
+                current.aperture,
+                None if previous is None else previous.aperture,
+                fractures,
+            ),
+            "permeability": (
+                None
+                if current.permeability is None
+                else property_change_fields(
+                    current.permeability,
+                    None if previous is None else previous.permeability,
+                    fractures,
+                )
+            ),
+        }
 
     def _contact_state_fields(
         self, model: pp.PorePyModel, state: Optional[ContactState]
@@ -865,6 +909,100 @@ def contact_state_counts(state: ContactState, tolerance: float) -> dict[str, int
         "num_near_opening_transition": int(np.sum(np.abs(state.opening) < tolerance)),
         "num_near_sliding_transition": int(np.sum(np.abs(state.sliding) < tolerance)),
     }
+
+
+@dataclass
+class FractureFlowProperties:
+    """Cell-wise fracture properties coupling deformation to flow."""
+
+    aperture: np.ndarray
+    """Aperture of every fracture cell."""
+    permeability: Optional[np.ndarray]
+    """Largest component of every fracture cell's permeability tensor, or `None` for a
+    model without fluid flow."""
+
+
+def evaluate_fracture_flow_properties(
+    model: pp.PorePyModel,
+) -> Optional[FractureFlowProperties]:
+    """Evaluate aperture and permeability on all fracture subdomains.
+
+    Parameters:
+        model: The model whose current iterate is evaluated.
+
+    Returns:
+        The properties, or `None` for a model without fractures or without an
+        aperture.
+
+    """
+    fractures = model.mdg.subdomains(dim=model.nd - 1)
+    if not fractures or not hasattr(model, "aperture"):
+        return None
+    aperture = cast(
+        np.ndarray, model.equation_system.evaluate(model.aperture(fractures))
+    )
+    permeability = None
+    if hasattr(model, "permeability"):
+        # Permeability evaluates to a full tensor per cell, nine entries each.
+        tensor = cast(
+            np.ndarray, model.equation_system.evaluate(model.permeability(fractures))
+        )
+        permeability = tensor.reshape(9, -1, order="F").max(axis=0)
+    return FractureFlowProperties(aperture=aperture, permeability=permeability)
+
+
+def property_change_fields(
+    current: np.ndarray, previous: Optional[np.ndarray], subdomains: list[pp.Grid]
+) -> dict[str, Any]:
+    """Range of a cell-wise fracture property, and the largest factor by which any
+    cell's value changed since `previous`.
+
+    The change is measured as a factor, `max(new / old, old / new)`, so that a doubling
+    and a halving count alike and the measure is independent of units. Cells where
+    either value is not positive have no such factor and are left out.
+
+    Parameters:
+        current: The property on every cell of `subdomains`, in order.
+        previous: The same at the previous iteration, or `None` if there is none.
+        subdomains: The fracture subdomains the values are laid out on.
+
+    Returns:
+        `min` and `max` of `current`; `max_change_factor` and `max_change_location`
+        (dim, domain id, cell), both `None` when no factor can be formed.
+
+    """
+    fields: dict[str, Any] = {
+        "min": float(np.min(current)),
+        "max": float(np.max(current)),
+        "max_change_factor": None,
+        "max_change_location": None,
+    }
+    if previous is None:
+        return fields
+    valid = (current > 0) & (previous > 0)
+    if not np.any(valid):
+        return fields
+    ratio = np.ones_like(current)
+    ratio[valid] = current[valid] / previous[valid]
+    factor = np.maximum(ratio, 1.0 / ratio)
+    cell = int(np.argmax(np.where(valid, factor, 0.0)))
+    fields["max_change_factor"] = float(factor[cell])
+    fields["max_change_location"] = _cell_location(cell, subdomains)
+    return fields
+
+
+def _cell_location(cell: int, subdomains: list[pp.Grid]) -> dict[str, int]:
+    """Locate a cell given by its index into values laid out over `subdomains`."""
+    offset = 0
+    for subdomain in subdomains:
+        if cell < offset + subdomain.num_cells:
+            return {
+                "dim": subdomain.dim,
+                "domain_id": subdomain.id,
+                "cell": cell - offset,
+            }
+        offset += subdomain.num_cells
+    raise ValueError(f"Cell {cell} lies beyond the given subdomains.")
 
 
 def contact_state_counts_by_subdomain(

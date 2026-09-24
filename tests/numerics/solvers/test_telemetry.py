@@ -42,6 +42,7 @@ from porepy.numerics.solvers.telemetry import (
     TelemetryConfig,
     contact_state_counts,
     evaluate_contact_state,
+    property_change_fields,
     read_jsonl_records,
     validate_record,
 )
@@ -1138,6 +1139,83 @@ class TestIncrementFields:
         assert record["increments"] == {
             "temperature": {"increment_inf_norm": 7.0, "value_inf_norm": 300.0}
         }
+
+
+class TestFractureFlowFields:
+    """The aperture and permeability fields tracing the dilation -> permeability
+    coupling.
+
+    A failure in the change factor or its location most likely means cells are
+    compared against the wrong previous values or located in the wrong fracture, which
+    would point a diagnosis at the wrong part of the fracture network.
+
+    """
+
+    def test_ranges_without_previous_values(self) -> None:
+        grid = pp.CartGrid([3])
+        fields = property_change_fields(np.array([1.0, 3.0, 2.0]), None, [grid])
+        assert fields == {
+            "min": 1.0,
+            "max": 3.0,
+            "max_change_factor": None,
+            "max_change_location": None,
+        }
+
+    def test_halving_and_doubling_count_alike_and_are_located(self) -> None:
+        first, second = pp.CartGrid([2]), pp.CartGrid([2])
+        previous = np.array([1.0, 1.0, 1.0, 1.0])
+        # A halving (factor 2) in the first fracture, a tripling in the second.
+        current = np.array([0.5, 1.0, 1.0, 3.0])
+
+        fields = property_change_fields(current, previous, [first, second])
+
+        assert fields["max_change_factor"] == pytest.approx(3.0)
+        assert fields["max_change_location"] == {
+            "dim": 1,
+            "domain_id": second.id,
+            "cell": 1,
+        }
+
+    def test_cells_without_a_positive_value_are_left_out(self) -> None:
+        grid = pp.CartGrid([2])
+        fields = property_change_fields(
+            np.array([0.0, 2.0]), np.array([1.0, 0.0]), [grid]
+        )
+        assert fields["max_change_factor"] is None
+
+    def test_none_for_a_model_without_fractures(self, tmp_path: Path) -> None:
+        recorder = NonlinearTelemetryRecorder(
+            TelemetryConfig(output_path=tmp_path / "telemetry.jsonl")
+        )
+        record = _record_bare_iteration(recorder, _prepared_model())
+        assert record["fracture_flow"] is None
+
+    def test_no_change_since_the_start_of_the_loop(self, tmp_path: Path) -> None:
+        class Model(SquareDomainOrthogonalFractures, pp.Poromechanics):
+            """One fracture, with both aperture and permeability."""
+
+        model = Model({"times_to_export": []})
+        model.prepare_simulation()
+        recorder = NonlinearTelemetryRecorder(
+            TelemetryConfig(output_path=tmp_path / "telemetry.jsonl")
+        )
+
+        recorder.before_nonlinear_loop(model)
+        record = _record_bare_iteration(recorder, model)
+
+        for name in ("aperture", "permeability"):
+            assert record["fracture_flow"][name]["max_change_factor"] == 1.0
+
+    def test_no_permeability_without_fluid_flow(self, tmp_path: Path) -> None:
+        model = _fixed_indicator_model(
+            opening_values=np.array([0.9, 0.9]), sliding_values=np.array([-0.9, -0.9])
+        )
+        recorder = NonlinearTelemetryRecorder(
+            TelemetryConfig(output_path=tmp_path / "telemetry.jsonl")
+        )
+        record = _record_bare_iteration(recorder, model)
+        assert record["fracture_flow"]["aperture"] is not None
+        assert record["fracture_flow"]["permeability"] is None
 
 
 class TestEvaluateContactState:
