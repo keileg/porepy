@@ -12,6 +12,7 @@ from . import (
     newton_solver,
     nonlinear_solvers,
     sequential_nonlinear_solver,
+    step_classification,
 )
 from .anderson_acceleration import *
 from .convergence_check import *
@@ -27,6 +28,7 @@ from .linear_solvers.linear_solver import (
 from .newton_solver import *
 from .nonlinear_solvers import *
 from .sequential_nonlinear_solver import *
+from .step_classification import *
 
 __all__.extend(anderson_acceleration.__all__)
 __all__.extend(convergence_check.__all__)
@@ -37,6 +39,7 @@ __all__.extend(nonlinear_solvers.__all__)
 __all__.extend(linear_solvers.__all__)
 __all__.extend(equation_variable_tags.__all__)
 __all__.extend(sequential_nonlinear_solver.__all__)
+__all__.extend(step_classification.__all__)
 
 # Imported last, and deliberately not part of the tuple import above: telemetry.py
 # pulls in porepy.viz.solver_statistics (for its numpy-aware JSON encoder), which in
