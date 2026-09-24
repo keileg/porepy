@@ -55,6 +55,7 @@ __all__ = [
     "CONTACT_STATE_SLIP",
     "evaluate_contact_state",
     "contact_state_counts",
+    "contact_state_counts_by_subdomain",
 ]
 
 
@@ -527,9 +528,9 @@ class NonlinearTelemetryRecorder:
 
     def _contact_state_fields(
         self, model: pp.PorePyModel, state: Optional[ContactState]
-    ) -> Optional[dict[str, int]]:
-        """Contact-state counts, or `None` for a model without fracture contact
-        mechanics.
+    ) -> Optional[dict[str, Any]]:
+        """Contact-state counts, overall and per fracture, or `None` for a model
+        without fracture contact mechanics.
 
         """
         if state is None:
@@ -537,7 +538,11 @@ class NonlinearTelemetryRecorder:
         tolerance = model.params.get(
             "constraint_violation_tolerance", _DEFAULT_CONSTRAINT_VIOLATION_TOLERANCE
         )
-        return contact_state_counts(state, tolerance)
+        fields: dict[str, Any] = dict(contact_state_counts(state, tolerance))
+        fields["by_subdomain"] = contact_state_counts_by_subdomain(
+            state, model.mdg.subdomains(dim=model.nd - 1)
+        )
+        return fields
 
     def record_outer_iteration(
         self,
@@ -860,6 +865,37 @@ def contact_state_counts(state: ContactState, tolerance: float) -> dict[str, int
         "num_near_opening_transition": int(np.sum(np.abs(state.opening) < tolerance)),
         "num_near_sliding_transition": int(np.sum(np.abs(state.sliding) < tolerance)),
     }
+
+
+def contact_state_counts_by_subdomain(
+    state: ContactState, subdomains: list[pp.Grid]
+) -> dict[str, dict[str, int]]:
+    """Count fracture cells per contact state, separately for each fracture.
+
+    Overall counts cannot say which fracture is slipping, and on a model with several
+    fractures the difficult region is usually one of them.
+
+    Parameters:
+        state: Evaluated contact state, from :func:`evaluate_contact_state`.
+        subdomains: The fracture subdomains `state` was evaluated on, in the same
+            order.
+
+    Returns:
+        Open, stick and slip counts, keyed by the subdomain id as a string (the form a
+        JSON object key takes anyway).
+
+    """
+    counts: dict[str, dict[str, int]] = {}
+    offset = 0
+    for subdomain in subdomains:
+        labels = state.labels[offset : offset + subdomain.num_cells]
+        offset += subdomain.num_cells
+        counts[str(subdomain.id)] = {
+            "num_open": int(np.sum(labels == CONTACT_STATE_OPEN)),
+            "num_stick": int(np.sum(labels == CONTACT_STATE_STICK)),
+            "num_slip": int(np.sum(labels == CONTACT_STATE_SLIP)),
+        }
+    return counts
 
 
 def _cycle_fields(

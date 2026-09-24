@@ -1288,6 +1288,27 @@ class TestContactStateCounts:
         # 0.2 > the configured tolerance of 0.1: no longer counted as near-transition.
         assert record["contact_state"]["num_near_opening_transition"] == 0
 
+    def test_counts_per_fracture(self, tmp_path: Path) -> None:
+        """A failure most likely means the indicator array is split at the wrong
+        offsets, attributing one fracture's cells to another."""
+        # Two fractures of two cells each: the first open and sticking, the second
+        # slipping in both cells.
+        model = _fixed_indicator_model(
+            opening_values=np.array([-0.9, 0.9, 0.9, 0.9]),
+            sliding_values=np.array([0.0, -0.9, 0.1, 0.2]),
+            fracture_indices=[0, 1],
+        )
+        config = TelemetryConfig(output_path=tmp_path / "telemetry.jsonl")
+        recorder = NonlinearTelemetryRecorder(config)
+
+        record = _record_bare_iteration(recorder, model)
+
+        first, second = (str(sd.id) for sd in model.mdg.subdomains(dim=model.nd - 1))
+        assert record["contact_state"]["by_subdomain"] == {
+            first: {"num_open": 1, "num_stick": 1, "num_slip": 0},
+            second: {"num_open": 0, "num_stick": 0, "num_slip": 2},
+        }
+
 
 class TestLineSearchFields:
     """Tests for the duck-typed `line_search` field."""
