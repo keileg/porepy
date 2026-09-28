@@ -27,6 +27,7 @@ from porepy.numerics.solvers.convergence_check import (
     ConvergenceStatusCollection,
 )
 from porepy.numerics.solvers.linear_solvers.linear_solver import (
+    LinearSolverStatus,
     LinearSolverStatusFailure,
     LinearSolverStatusSuccess,
 )
@@ -483,6 +484,10 @@ class TestValidateRecord:
         )
 
 
+class _UnknownLinearSolverStatus(LinearSolverStatus):
+    """A status that is neither of the two base cases, carrying no `reason`."""
+
+
 def _prepared_model() -> pp.PorePyModel:
     """A small, prepared model with exactly one equation block: `mass_balance_equation`
     on a single 2x2 Cartesian subdomain (4 cells), so per-block telemetry has exactly
@@ -845,7 +850,36 @@ class TestNonlinearTelemetryRecorder:
         for key, value in expected_fields.items():
             assert record[key] == value
 
-    def test_linear_solver_failure_is_recorded(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "status, expected",
+        [
+            (
+                LinearSolverStatusFailure(reason="singular matrix"),
+                {
+                    "success": False,
+                    "outcome": "LinearSolverStatusFailure",
+                    "reason": "singular matrix",
+                },
+            ),
+            # A status class the recorder was not written for, e.g. one a linear solver
+            # package defines for a solve that stopped short of its tolerance.
+            (
+                _UnknownLinearSolverStatus(),
+                {
+                    "success": False,
+                    "outcome": "_UnknownLinearSolverStatus",
+                    "reason": None,
+                },
+            ),
+        ],
+    )
+    def test_unsuccessful_linear_solve_is_recorded(
+        self, tmp_path: Path, status, expected
+    ) -> None:
+        """A failure here with an exception, rather than a mismatch, means the recorder
+        ends a run on a status class it does not know, which it must never do.
+
+        """
         model = _prepared_model()
         residual, equation_indexer = _full_residual_and_indexer(model)
         recorder = self._recorder(tmp_path)
@@ -857,17 +891,14 @@ class TestNonlinearTelemetryRecorder:
             residual=residual,
             equation_indexer=equation_indexer,
             variable_indexer=model.equation_system.variable_indexer,
-            linear_solver_status=LinearSolverStatusFailure(reason="singular matrix"),
+            linear_solver_status=status,
             convergence_status=ConvergenceStatusCollection(),
             divergence_status=ConvergenceStatusCollection(),
             convergence_info={},
         )
 
         [record] = read_jsonl_records(tmp_path / "telemetry.jsonl")
-        assert record["linear_solver"] == {
-            "success": False,
-            "reason": "singular matrix",
-        }
+        assert record["linear_solver"] == expected
 
     def test_no_admissibility_bounds_configured_gives_empty_dict(
         self, tmp_path: Path

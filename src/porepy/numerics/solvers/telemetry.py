@@ -26,7 +26,6 @@ from porepy.numerics.solvers.cycle_detection import ActiveSetHistory
 from porepy.numerics.solvers.equation_variable_tags import EquationTag, VariableTag
 from porepy.numerics.solvers.linear_solvers.linear_solver import (
     LinearSolverStatus,
-    LinearSolverStatusFailure,
     LinearSolverStatusSuccess,
 )
 
@@ -1062,9 +1061,17 @@ def _stringify_status(status: ConvergenceStatusCollection) -> dict[str, str]:
 
 
 def _linear_solver_fields(status: LinearSolverStatus) -> dict[str, Any]:
+    """Success flag, and the solve time or why the solve fell short.
+
+    Any status other than success is recorded as unsuccessful, with its class name as
+    ``outcome``, rather than checked against a fixed set of classes: a status class the
+    recorder does not know must not end the run it observes.
+
+    """
     if isinstance(status, LinearSolverStatusSuccess):
         return {"success": True, "solve_time": status.solve_time}
-    assert isinstance(status, LinearSolverStatusFailure), (
-        "LinearSolverStatus is documented as a closed enum of two cases."
-    )
-    return {"success": False, "reason": status.reason}
+    return {
+        "success": False,
+        "outcome": type(status).__name__,
+        "reason": getattr(status, "reason", None),
+    }
