@@ -399,11 +399,24 @@ class AbsoluteDivergenceCriterion(AbsoluteCriterion, DivergenceCriterion):
 
 
 class RelativeCriterion:
+    """Base class for criteria measuring a quantity against a reference value.
+
+    Parameters:
+        tol: Tolerance for convergence - criterion is inactive if set to `np.inf`.
+        metric: Metric to compute the convergence measure.
+        reference_value: Reference value for relative convergence.
+        zero_reference_atol: Absolute tolerance for entries whose reference value has
+            so far been zero, where a relative measure is undefined. ``None``, the
+            default, leaves such entries untested.
+
+    """
+
     def __init__(
         self,
         tol: float,
         metric: pp.Metric,
         reference_value: ConvergenceInfo | None = None,
+        zero_reference_atol: float | None = None,
     ) -> None:
         self.tol = tol
         """Tolerance for convergence - criterion in active if set to `np.inf`."""
@@ -411,6 +424,8 @@ class RelativeCriterion:
         """Metric to compute the convergence measure."""
         self.reference_value = reference_value
         """Reference value for relative convergence."""
+        self.zero_reference_atol = zero_reference_atol
+        """Absolute tolerance for entries whose reference value has so far been zero."""
 
     def reset(self) -> None:
         """Reset the reference value."""
@@ -434,6 +449,55 @@ class RelativeCriterion:
                 non_zero_reference_value[key] = val
         self.reference_value.update(non_zero_reference_value)
 
+    def measure(
+        self, value: np.ndarray, reference: np.ndarray | None
+    ) -> tuple[ConvergenceInfo, dict[str, bool]]:
+        """Measure a quantity against the reference value, entry by entry.
+
+        The reference is recomputed at every call: :meth:`set_reference_value` only
+        sets entries that are not yet set, and skips those that are zero in the
+        reference. Such an entry must be allowed to be set later, once it becomes
+        non-zero. Until then, it is held to :attr:`zero_reference_atol`, or left
+        untested if that is ``None``.
+
+        Parameters:
+            value: The quantity to measure.
+            reference: The quantity from which the reference value is computed.
+
+        Returns:
+            The metric value of the quantity, and for every tested entry, whether it is
+            below its bound.
+
+        """
+        if reference is not None:
+            self.set_reference_value(self.metric(reference))
+        self.reference_value = self.reference_value or {}
+
+        metric_value = self.metric(value)
+        bounds = {key: self.bound(key) for key in metric_value}
+        within_bounds = {
+            key: metric_value[key] < bound
+            for key, bound in bounds.items()
+            if bound is not None
+        }
+        return metric_value, within_bounds
+
+    def bound(self, key: str) -> float | None:
+        """Return the value an entry must fall below to satisfy this criterion.
+
+        Parameters:
+            key: The entry to bound.
+
+        Returns:
+            ``tol`` times the entry's reference value, or, for an entry without a
+            reference value, :attr:`zero_reference_atol`.
+
+        """
+        assert isinstance(self.reference_value, dict)
+        if key in self.reference_value:
+            return self.tol * self.reference_value[key]
+        return self.zero_reference_atol
+
     def __repr__(self) -> str:
         s = f"{self.__class__.__name__}(tol={self.tol}, "
         s += f"metric={self.metric.__class__.__name__}, "
@@ -450,9 +514,9 @@ class RelativeConvergenceCriterion(RelativeCriterion, ConvergenceCriterion):
     def check(self, *args, **kwargs) -> tuple[ConvergenceStatus, ConvergenceInfo]:
         """Check convergence.
 
-        The criterion is checked for each entry of ``self.reference_value``
-        separately, and the convergence is declared only if all entries satisfy the
-        criterion.
+        The criterion is checked for each entry separately, see :meth:`measure`, and
+        convergence is declared only if all tested entries satisfy the criterion. If no
+        entry was tested, convergence is not declared, since nothing was then checked.
 
         Parameters:
             args: Positional arguments for the convergence check.
@@ -460,35 +524,27 @@ class RelativeConvergenceCriterion(RelativeCriterion, ConvergenceCriterion):
 
         Returns:
             tuple[ConvergenceStatus, ConvergenceInfo]: Convergence status of the
-                non-linear iteration and information about the convergence check.
+                non-linear iteration and information about the convergence check: the
+                ratio to the reference value for each tested entry, or the metric value
+                itself for an entry without a reference value.
 
         """
         # Check if tol is np.inf - do not check convergence in this case.
         if self.tol == np.inf:
             return ConvergenceStatus.CONVERGED, {}
 
-        # Always recompute the reference: set_reference_value only sets entries that
-        # are not yet set, and skips those that are zero in the reference. Such an
-        # entry must be allowed to be set later, once it becomes non-zero.
-        reference_value = self.metric(kwargs["reference"])
-        if reference_value is not None:
-            self.set_reference_value(reference_value)
-
-        metric_value = self.metric(kwargs["value"])
-        assert isinstance(self.reference_value, dict)
+        metric_value, within_bounds = self.measure(kwargs["value"], kwargs["reference"])
         status = (
             ConvergenceStatus.CONVERGED
-            if all(
-                val < self.tol * (self.reference_value[key])
-                for key, val in metric_value.items()
-                if key in self.reference_value
-            )
+            if within_bounds and all(within_bounds.values())
             else ConvergenceStatus.CONTINUE_ITERATING
         )
+        assert isinstance(self.reference_value, dict)
         relative_metric_value: ConvergenceInfo = {
-            key: val / self.reference_value[key]
-            for key, val in metric_value.items()
+            key: metric_value[key] / self.reference_value[key]
             if key in self.reference_value
+            else metric_value[key]
+            for key in within_bounds
         }
 
         return status, relative_metric_value
@@ -500,9 +556,9 @@ class RelativeDivergenceCriterion(RelativeCriterion, DivergenceCriterion):
     def check(self, *args, **kwargs) -> ConvergenceStatus:
         """Check divergence.
 
-        If self.reference_value is a dictionary, the criterion is checked for each entry
-        in this dictionary separately, and divergence is declared if any entry satisfy
-        the criterion.
+        The criterion is checked for each entry separately, see :meth:`measure`, and
+        divergence is declared if any tested entry exceeds its bound. An untested entry
+        never signals divergence.
 
         Parameters:
             args: Positional arguments for the divergence check.
@@ -513,13 +569,14 @@ class RelativeDivergenceCriterion(RelativeCriterion, DivergenceCriterion):
             ConvergenceStatus: Convergence status of the non-linear iteration.
 
         """
-        status, _ = RelativeConvergenceCriterion.check(
-            cast(RelativeConvergenceCriterion, self), *args, **kwargs
-        )
-        if status.is_iterating():
-            status = ConvergenceStatus.FAILED
-            logger.info(self.divergence_msg())
-        return status
+        if self.tol == np.inf:
+            return ConvergenceStatus.CONVERGED
+
+        _, within_bounds = self.measure(kwargs["value"], kwargs["reference"])
+        if all(within_bounds.values()):
+            return ConvergenceStatus.CONVERGED
+        logger.info(self.divergence_msg())
+        return ConvergenceStatus.FAILED
 
 
 class CombinedCriterion:
@@ -1023,13 +1080,13 @@ def assemble_default_convergence_criteria(
                     tol=inc_atol, metric=metric
                 ),
                 "inc_rel": pp.solvers.IncrementBasedRelativeCriterion(
-                    tol=inc_rtol, metric=metric
+                    tol=inc_rtol, metric=metric, zero_reference_atol=inc_atol
                 ),
                 "res_abs": pp.solvers.ResidualBasedAbsoluteCriterion(
                     tol=res_atol, metric=metric
                 ),
                 "res_rel": pp.solvers.ResidualBasedRelativeCriterion(
-                    tol=res_rtol, metric=metric
+                    tol=res_rtol, metric=metric, zero_reference_atol=res_atol
                 ),
             }
         )
