@@ -98,6 +98,16 @@ class TestCost:
         costs = [a.cost for a in classify_run(records, THRESHOLDS).attempts]
         assert costs == ["normal", "expensive", "failed", "unfinished"]
 
+    def test_failed_attempt_without_iterations(self) -> None:
+        """An attempt that failed before its first iteration was recorded, as on a
+        failed first linear solve, is failed and unlabelled. A failure here most likely
+        means a rule reads the first or last iteration without checking there is one.
+
+        """
+        cost, labels = _classify_one([], successful=False)
+        assert cost == "failed"
+        assert labels == {}
+
     def test_normal_attempts_get_no_labels(self) -> None:
         cost, labels = _classify_one(
             [_iteration(1, linear_solve_succeeded=False)], successful=True
