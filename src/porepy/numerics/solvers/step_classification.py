@@ -226,7 +226,9 @@ def _classify_attempt(
         dt=None if step is None else step.get("dt"),
         time=None if step is None else step.get("time"),
     )
-    if cost in (FAILED, EXPENSIVE):
+    # An attempt can fail before its first iteration is recorded, e.g. when the first
+    # linear solve fails; it then carries no evidence for any mechanism.
+    if cost in (FAILED, EXPENSIVE) and iterations:
         classification.labels = _mechanism_labels(
             iterations, failed=cost == FAILED, thresholds=thresholds
         )
