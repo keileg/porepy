@@ -9,6 +9,8 @@ This module evaluates, for every well grid, the junctions (0-d grids) coupling i
 the rest of the model, and the interfaces of both:
 - every variable on these grids: its value after the iteration and its increment;
 - every equation on them: its residual;
+- the same for the cells an interface of codimension 2 couples to, e.g. the fracture
+  cells holding a junction, where the well's flow enters or leaves the fracture;
 - on the well grids also the fluid density and specific enthalpy, the face fluxes, the
   type of the Darcy flux condition on faces at the domain boundary (the wellhead), and
   the cell-wise CFL number.
@@ -103,7 +105,9 @@ def well_state_fields(
         (`None` for a variable the solver does not update), and per equation on it, its
         residual. Wells add their geometry, fluid properties, face fluxes, wellhead
         conditions and CFL numbers; junctions their depth; interfaces their
-        codimension and the ids of the two subdomains they couple.
+        codimension and the ids of the two subdomains they couple, and an interface
+        of codimension 2 the same fields for the ``primary_cells`` it couples to:
+        for a junction in a fracture, the fracture cells holding it.
 
     """
     increments: dict[tuple[str, pp.Grid | pp.MortarGrid], np.ndarray] = {
@@ -115,15 +119,32 @@ def well_state_fields(
         for equation, indices in equation_indexer.indices.items()
     }
 
-    def grid_fields(grid: pp.Grid | pp.MortarGrid) -> dict[str, Any]:
-        """Variables and residuals of one grid."""
+    def grid_fields(
+        grid: pp.Grid | pp.MortarGrid, cells: Optional[np.ndarray] = None
+    ) -> dict[str, Any]:
+        """Variables and residuals of one grid, or of some of its cells."""
+        equations = model.equation_system.equations
         return {
-            "variables": _variable_fields(model, grid, increments),
+            "variables": _variable_fields(model, grid, increments, cells),
             "residuals": {
-                name: values.tolist()
+                name: _on_cells(
+                    values, cells, equations[name].target.dof_info.cells
+                ).tolist()
                 for (name, domain), values in residuals.items()
                 if domain is grid
             },
+        }
+
+    def primary_cell_fields(interface: pp.MortarGrid) -> dict[str, Any]:
+        """The cells of the higher-dimensional grid an interface of codimension 2
+        couples to, e.g. the fracture cells holding a junction."""
+        primary, _ = mdg.interface_to_subdomain_pair(interface)
+        cells = np.unique(interface.mortar_to_primary_int().nonzero()[0])
+        return {
+            "domain_id": primary.id,
+            "cells": cells.tolist(),
+            "cell_z": primary.cell_centers[2, cells].tolist(),
+            **grid_fields(primary, cells),
         }
 
     mdg = model.mdg
@@ -156,6 +177,11 @@ def well_state_fields(
                     sd.id for sd in mdg.interface_to_subdomain_pair(interface)
                 ],
                 **grid_fields(interface),
+                **(
+                    {"primary_cells": primary_cell_fields(interface)}
+                    if interface.codim == 2
+                    else {}
+                ),
             }
             for interface in topology.interfaces
         ],
@@ -200,19 +226,36 @@ def _variable_fields(
     model: pp.PorePyModel,
     grid: pp.Grid | pp.MortarGrid,
     increments: dict[tuple[str, pp.Grid | pp.MortarGrid], np.ndarray],
+    cells: Optional[np.ndarray] = None,
 ) -> dict[str, dict[str, Optional[list[float]]]]:
-    """Value and increment of every variable on a grid."""
+    """Value and increment of every variable on a grid, or on some of its cells."""
     equation_system = model.equation_system
     fields: dict[str, dict[str, Optional[list[float]]]] = {}
     for variable in equation_system.get_variables(grids=[grid]):
+        num_components = variable.target.dof_info.cells
+        value = equation_system.get_variable_values(
+            variables=[variable], iterate_index=0
+        )
         increment = increments.get((variable.name, grid))
         fields[variable.name] = {
-            "value": equation_system.get_variable_values(
-                variables=[variable], iterate_index=0
-            ).tolist(),
-            "increment": None if increment is None else increment.tolist(),
+            "value": _on_cells(value, cells, num_components).tolist(),
+            "increment": None
+            if increment is None
+            else _on_cells(increment, cells, num_components).tolist(),
         }
     return fields
+
+
+def _on_cells(
+    values: np.ndarray, cells: Optional[np.ndarray], num_components: int
+) -> np.ndarray:
+    """The entries of cell-wise `values` (cell-major, `num_components` per cell) that
+    belong to `cells`; all of them if `cells` is `None`."""
+    if cells is None:
+        return values
+    return values[
+        (cells[:, np.newaxis] * num_components + np.arange(num_components)).ravel()
+    ]
 
 
 def _well_name(model: pp.PorePyModel, well: pp.Grid) -> Optional[str]:

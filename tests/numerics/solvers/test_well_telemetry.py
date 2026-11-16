@@ -17,6 +17,7 @@ from porepy.applications.md_grids.model_geometries import CubeDomainOrthogonalFr
 from porepy.applications.test_utils import well_models
 from porepy.numerics.solvers.well_telemetry import (
     WellTopology,
+    _on_cells,
     cell_cfl,
     find_well_topology,
     well_state_fields,
@@ -157,6 +158,56 @@ def test_values_increments_and_residuals(
     assert [j["domain_id"] for j in fields["junctions"]] == [
         j.id for j in topology.junctions
     ]
+
+
+def test_fracture_cells_holding_a_junction(
+    well_model: pp.PorePyModel, topology: WellTopology
+) -> None:
+    """The junction-fracture interface records the fracture cells it couples to,
+    with their own slices of the variables and residuals. A failure most likely means
+    the cells are taken from the wrong side of the interface, or a multi-component
+    variable (contact traction, say) is sliced per entry instead of per cell.
+
+    """
+    equation_system = well_model.equation_system
+    increment = np.arange(equation_system.num_dofs(), dtype=float)
+    residual = equation_system.assemble(evaluate_jacobian=False)
+
+    fields = _fields(well_model, topology, increment, equation_system.variable_indexer)
+
+    (recorded,) = [i for i in fields["interfaces"] if i["codim"] == 2]
+    interface = next(intf for intf in topology.interfaces if intf.codim == 2)
+    fracture, junction = well_model.mdg.interface_to_subdomain_pair(interface)
+    cells = recorded["primary_cells"]["cells"]
+    assert recorded["primary_cells"]["domain_id"] == fracture.id
+    # The junction lies on the fracture cells recorded for it.
+    assert np.allclose(fracture.cell_centers[2, cells], junction.cell_centers[2, 0])
+    pressure = equation_system.get_variables(["pressure"], [fracture])
+    pressure_dofs = equation_system.dofs_of(pressure)[cells]
+    assert recorded["primary_cells"]["variables"]["pressure"]["increment"] == (
+        increment[pressure_dofs].tolist()
+    )
+    mass_balance = next(
+        indices
+        for equation, indices in equation_system.equation_indexer.indices.items()
+        if equation.name == "mass_balance_equation" and equation.domain is fracture
+    )
+    assert recorded["primary_cells"]["residuals"]["mass_balance_equation"] == (
+        residual[mass_balance[cells]].tolist()
+    )
+    assert "primary_cells" not in next(
+        i for i in fields["interfaces"] if i["codim"] == 1
+    )
+
+
+def test_cell_slice_keeps_all_components_of_a_cell() -> None:
+    """Cell-wise values are laid out cell-major, so the slice for some cells takes
+    each cell's components together, as for a contact traction with three per cell.
+
+    """
+    values = np.arange(12.0)  # Four cells, three components each.
+    assert _on_cells(values, np.array([1, 3]), 3).tolist() == [3, 4, 5, 9, 10, 11]
+    assert _on_cells(values, None, 3) is values
 
 
 def test_restricted_solver_records_no_increment_for_inactive_variables(
