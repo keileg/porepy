@@ -1145,8 +1145,13 @@ class TestIncrementFields:
             tmp_path, model, increment, model.equation_system.variable_indexer
         )
 
+        subdomain = model.mdg.subdomains()[0]
         assert record["increments"] == {
-            "pressure": {"increment_inf_norm": 0.4, "value_inf_norm": 5.0}
+            "pressure": {
+                "increment_inf_norm": 0.4,
+                "value_inf_norm": 5.0,
+                "argmax_location": {"dim": 2, "domain_id": subdomain.id, "cell": 2},
+            }
         }
 
     def test_restricted_layout(self, tmp_path: Path) -> None:
@@ -1167,8 +1172,17 @@ class TestIncrementFields:
 
         record = self._record(tmp_path, model, increment, restricted)
 
+        subdomain = model.mdg.subdomains()[0]
         assert record["increments"] == {
-            "temperature": {"increment_inf_norm": 7.0, "value_inf_norm": 300.0}
+            "temperature": {
+                "increment_inf_norm": 7.0,
+                "value_inf_norm": 300.0,
+                "argmax_location": {
+                    "dim": subdomain.dim,
+                    "domain_id": subdomain.id,
+                    "cell": subdomain.num_cells - 1,
+                },
+            }
         }
 
 

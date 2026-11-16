@@ -244,7 +244,7 @@ class NonlinearIterationRecorder(Protocol):
         ...
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 """Version of the telemetry JSONL record format produced by this module.
 
 Bump on any field addition, removal, or type change to a record this module produces,
@@ -709,8 +709,10 @@ class NonlinearTelemetryRecorder:
             fields[name] = {
                 "residual_inf_norm": norm,
                 "reduction_factor": reduction_factor,
-                "argmax_location": self._argmax_location(
-                    model, name, domains_to_indices, block_residual
+                "argmax_location": _argmax_location(
+                    domains_to_indices,
+                    block_residual,
+                    model.equation_system.equations[name].target.dof_info.cells,
                 ),
             }
         return fields
@@ -720,13 +722,16 @@ class NonlinearTelemetryRecorder:
         model: pp.PorePyModel,
         nonlinear_increment: np.ndarray,
         variable_indexer: pp.ad.VariableIndexer,
-    ) -> dict[str, dict[str, float]]:
-        """Per-variable-block L-inf norms of the increment and of the updated iterate.
+    ) -> dict[str, dict[str, Any]]:
+        """Per-variable-block L-inf norms of the increment and of the updated iterate,
+        and the cell of the largest increment.
 
         Successive increment norms of a block give its observed convergence rate, and
         unlike residual norms they are not held up by a round-off floor until the
         increment itself reaches round-off relative to the iterate, which the second
-        norm makes visible.
+        norm makes visible. The location tells which part of the model the Newton step
+        moves most, which the residual locations do not: a cell can be balanced while
+        its value swings.
 
         Parameters:
             model: The model being solved, holding the iterate after the increment.
@@ -744,59 +749,33 @@ class NonlinearTelemetryRecorder:
 
         iterate = model.equation_system.get_variable_values(iterate_index=0)
         full_indices = model.equation_system.variable_indexer.indices
-        increment_parts: dict[str, list[np.ndarray]] = {}
+        increment_indices: dict[str, dict[pp.GridLike, np.ndarray]] = {}
         iterate_parts: dict[str, list[np.ndarray]] = {}
+        num_components: dict[str, int] = {}
         for variable, indices in variable_indexer.indices.items():
             if variable not in selected_variables or indices.size == 0:
                 continue
-            increment_parts.setdefault(variable.name, []).append(
-                nonlinear_increment[indices]
-            )
+            increment_indices.setdefault(variable.name, {})[variable.domain] = indices
             iterate_parts.setdefault(variable.name, []).append(
                 iterate[full_indices[variable]]
             )
-        return {
-            name: {
-                "increment_inf_norm": float(np.max(np.abs(np.concatenate(parts)))),
+            num_components[variable.name] = variable.target.dof_info.cells
+
+        fields: dict[str, dict[str, Any]] = {}
+        for name, domains_to_indices in increment_indices.items():
+            block_increment = nonlinear_increment[
+                np.concatenate(list(domains_to_indices.values()))
+            ]
+            fields[name] = {
+                "increment_inf_norm": float(np.max(np.abs(block_increment))),
                 "value_inf_norm": float(
                     np.max(np.abs(np.concatenate(iterate_parts[name])))
                 ),
+                "argmax_location": _argmax_location(
+                    domains_to_indices, block_increment, num_components[name]
+                ),
             }
-            for name, parts in increment_parts.items()
-        }
-
-    def _argmax_location(
-        self,
-        model: pp.PorePyModel,
-        name: str,
-        domains_to_indices: dict[pp.GridLike, np.ndarray],
-        block_residual: np.ndarray,
-    ) -> dict[str, Any] | None:
-        """Locate the largest-magnitude entry of one block's residual, as a cell.
-
-        `None` if this equation isn't cell-centered (e.g. defined on faces/nodes),
-        since `pp.ad.dof_to_cell` doesn't apply then.
-
-        """
-        num_components = model.equation_system.equations[name].target.dof_info.cells
-        if num_components <= 0:
-            return None
-
-        argmax_local = int(np.argmax(np.abs(block_residual)))
-        offset = 0
-        for domain, indices in domains_to_indices.items():
-            if argmax_local < offset + indices.size:
-                local_in_domain = argmax_local - offset
-                return {
-                    "dim": domain.dim,
-                    "domain_id": domain.id,
-                    "cell": pp.ad.dof_to_cell(local_in_domain, domain, num_components),
-                }
-            offset += indices.size
-        raise AssertionError(
-            "argmax index not found in any domain; block_indices/domains_to_indices "
-            "are inconsistent."
-        )
+        return fields
 
     def _admissibility_counts(self, model: pp.PorePyModel) -> dict[str, dict[str, int]]:
         """Count, per configured variable, how many entries fall outside its bounds.
@@ -1054,6 +1033,46 @@ def _cycle_fields(
         "num_flipped_cells": detection.num_flipped_cells,
         "chattering_cells": detection.chattering_cells,
     }
+
+
+def _argmax_location(
+    domains_to_indices: dict[pp.GridLike, np.ndarray],
+    block_values: np.ndarray,
+    num_components: int,
+) -> dict[str, Any] | None:
+    """Locate the largest-magnitude entry of one block's values, as a cell.
+
+    Parameters:
+        domains_to_indices: The block's index arrays per domain, in the order
+            `block_values` concatenates them.
+        block_values: The block's values, a residual or an increment.
+        num_components: Degrees of freedom per cell of the block. Zero or less if the
+            block is not cell-centered (e.g. defined on faces/nodes), which
+            `pp.ad.dof_to_cell` does not apply to.
+
+    Returns:
+        The domain's dimension and id, and the cell; `None` for a block that is not
+        cell-centered.
+
+    """
+    if num_components <= 0:
+        return None
+
+    argmax_local = int(np.argmax(np.abs(block_values)))
+    offset = 0
+    for domain, indices in domains_to_indices.items():
+        if argmax_local < offset + indices.size:
+            local_in_domain = argmax_local - offset
+            return {
+                "dim": domain.dim,
+                "domain_id": domain.id,
+                "cell": pp.ad.dof_to_cell(local_in_domain, domain, num_components),
+            }
+        offset += indices.size
+    raise AssertionError(
+        "argmax index not found in any domain; block_indices/domains_to_indices "
+        "are inconsistent."
+    )
 
 
 def _stringify_status(status: ConvergenceStatusCollection) -> dict[str, str]:
