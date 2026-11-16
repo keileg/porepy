@@ -3,7 +3,8 @@
 Telemetry is purely additive and off by default: a
 :class:`NonlinearIterationRecorder` receives only values its callers have already
 computed for their own purposes (residuals, convergence status, linear-solver status),
-so recording must never trigger additional AD evaluation or system assembly.
+so recording never assembles the system. Beyond those values it evaluates only cheap
+diagnostic operators: contact states, fracture properties and the state of the wells.
 
 """
 
@@ -27,6 +28,11 @@ from porepy.numerics.solvers.equation_variable_tags import EquationTag, Variable
 from porepy.numerics.solvers.linear_solvers.linear_solver import (
     LinearSolverStatus,
     LinearSolverStatusSuccess,
+)
+from porepy.numerics.solvers.well_telemetry import (
+    WellTopology,
+    find_well_topology,
+    well_state_fields,
 )
 
 # Reuses the numpy-aware JSON encoder SolverStatistics already relies on, rather than
@@ -85,6 +91,11 @@ class TelemetryConfig:
         admissibility_bounds: Per-variable `(lower, upper)` bounds used for read-only
             admissibility counting. Keyed by variable name; a variable absent from
             this mapping is not checked.
+        record_wells: Whether iteration records carry the state of every well, its
+            junctions and their interfaces (see
+            :mod:`~porepy.numerics.solvers.well_telemetry`). On by default: wells are a
+            frequent source of nonlinear difficulty, and their state is invisible in
+            the global fields. A model without wells records `null`.
 
     Raises:
         ValueError: If `verbosity` is not 0, 1, or 2; if `cycle_window` is not
@@ -100,6 +111,7 @@ class TelemetryConfig:
     cycle_window: int = 8
     flip_threshold: int = 2
     admissibility_bounds: dict[str, tuple[float, float]] = field(default_factory=dict)
+    record_wells: bool = True
 
     def __post_init__(self) -> None:
         if self.verbosity not in (0, 1, 2):
@@ -434,6 +446,7 @@ class NonlinearTelemetryRecorder:
     `EquationOnDomain`/`Variable`/`EquationIndexer`), linear-solver status,
     admissibility counts (config-declared bounds, pure counting), the range and largest
     per-iteration change of fracture aperture and permeability for a fractured model,
+    the state of every well, its junctions and interfaces for a model with wells,
     and three duck-typed fields specific to contact-mechanics models: contact-state
     counts, active-set cycle/chattering detection, and line-search telemetry. A model
     that doesn't expose the corresponding hook simply gets `null` for that field,
@@ -477,6 +490,11 @@ class NonlinearTelemetryRecorder:
         # Fracture aperture and permeability at the previous inner iteration, or at the
         # start of the loop before its first iteration.
         self._previous_fracture_flow: Optional[FractureFlowProperties] = None
+        # The wells of the md-grid they were found in. Looked up again when the model
+        # gets a new md-grid, as it does each time it is prepared anew.
+        self._well_topology: tuple[
+            Optional[pp.MixedDimensionalGrid], Optional[WellTopology]
+        ] = (None, None)
         self._outer_active_sets = ActiveSetHistory(
             window=config.cycle_window, flip_threshold=config.flip_threshold
         )
@@ -532,7 +550,45 @@ class NonlinearTelemetryRecorder:
                 "cycle": _cycle_fields(self._inner_active_sets, contact_state),
                 "fracture_flow": self._fracture_flow_fields(model),
                 "line_search": self._line_search_fields(model),
+                "wells": self._well_fields(
+                    model,
+                    nonlinear_increment,
+                    residual,
+                    equation_indexer,
+                    variable_indexer,
+                ),
             }
+        )
+
+    def _well_fields(
+        self,
+        model: pp.PorePyModel,
+        nonlinear_increment: np.ndarray,
+        residual: np.ndarray,
+        equation_indexer: pp.ad.EquationIndexer,
+        variable_indexer: pp.ad.VariableIndexer,
+    ) -> Optional[dict[str, list[dict[str, Any]]]]:
+        """State of the wells, their junctions and interfaces; `None` if recording
+        them is switched off or the model has no wells.
+
+        Costs a few operator evaluations on the well grids per iteration.
+
+        """
+        if not self.config.record_wells:
+            return None
+        mdg, topology = self._well_topology
+        if mdg is not model.mdg:
+            topology = find_well_topology(model)
+            self._well_topology = (model.mdg, topology)
+        if topology is None:
+            return None
+        return well_state_fields(
+            model,
+            topology,
+            nonlinear_increment,
+            residual,
+            equation_indexer,
+            variable_indexer,
         )
 
     def _fracture_flow_fields(
