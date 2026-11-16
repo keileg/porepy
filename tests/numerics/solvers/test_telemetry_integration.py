@@ -21,7 +21,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Literal, Optional
 from unittest import mock
 
 import numpy as np
@@ -29,8 +29,10 @@ import pytest
 
 import porepy as pp
 from porepy.applications.md_grids.model_geometries import (
+    CubeDomainOrthogonalFractures,
     SquareDomainOrthogonalFractures,
 )
+from porepy.applications.test_utils import well_models
 from porepy.models.solution_strategy import ContactIndicators
 from porepy.numerics.solvers.newton_solver import NewtonSolver
 from porepy.numerics.solvers.telemetry import (
@@ -231,6 +233,101 @@ class TestRecordedRun:
         for record in iterations:
             assert record["contact_state"]["num_total"] == 2
             assert record["cycle"]["active_set_hash"]
+
+
+class WellFixtureModel(
+    well_models.OneVerticalWell,
+    CubeDomainOrthogonalFractures,
+    well_models.BoundaryConditionsWellSetup,
+    well_models.WellPermeability,
+    pp.MassAndEnergyBalance,
+):
+    """Mass and energy balance with one well crossing a horizontal fracture."""
+
+    def meshing_arguments(self) -> dict:
+        return {"cell_size": 0.25}
+
+    def grid_type(self) -> Literal["cartesian"]:
+        return "cartesian"
+
+
+def run_well_model(telemetry: Optional[NonlinearIterationRecorder]) -> pp.PorePyModel:
+    """Run the well fixture model for two time steps, with or without telemetry."""
+    model = WellFixtureModel(
+        {
+            "fracture_indices": [2],
+            "times_to_export": [],
+            "time_manager": pp.TimeManager(
+                schedule=[0, 2], dt_init=1.0, constant_dt=True
+            ),
+        }
+    )
+    pp.ModelRunner(
+        model,
+        time_stepper=TimeStepper(
+            scheduler=assemble_default_time_scheduler(time_manager=model.time_manager),
+            telemetry=telemetry,
+        ),
+        # The model's energy residual is of order 1e7, beyond the default tolerances.
+        nonlinear_solver=NewtonSolver(
+            params={"nl_convergence_res_atol": 1e-6, "nl_convergence_inc_atol": 1e-8},
+            telemetry=telemetry,
+        ),
+    ).run()
+    return model
+
+
+class TestWellFields:
+    """The well state in the records of a run with a well.
+
+    The recording is on by default and evaluates operators on the well grids, so it
+    must neither change the solution nor fall out of step with the model's state.
+
+    """
+
+    @pytest.fixture(scope="class")
+    def well_run(
+        self, tmp_path_factory: pytest.TempPathFactory
+    ) -> tuple[pp.PorePyModel, list[dict[str, Any]]]:
+        path = tmp_path_factory.mktemp("telemetry") / "telemetry.jsonl"
+        model = run_well_model(recorder_writing_to(path))
+        return model, read_jsonl_records(path)
+
+    def test_recording_does_not_change_the_solution(
+        self, well_run: tuple[pp.PorePyModel, list[dict[str, Any]]]
+    ) -> None:
+        model, _ = well_run
+        assert np.array_equal(final_values(model), final_values(run_well_model(None)))
+
+    def test_every_iteration_records_the_well(
+        self, well_run: tuple[pp.PorePyModel, list[dict[str, Any]]]
+    ) -> None:
+        model, records = well_run
+        well = next(sd for sd in model.mdg.subdomains(dim=1) if model.is_well_grid(sd))
+        iterations = [r for r in records if r["record_type"] == "iteration"]
+
+        assert iterations
+        for record in iterations:
+            validate_record(record)
+            assert [w["domain_id"] for w in record["wells"]["wells"]] == [well.id]
+
+        # The last iteration is the converged state the model ends in.
+        recorded = iterations[-1]["wells"]["wells"][0]["variables"]["temperature"]
+        temperature = model.equation_system.get_variables(["temperature"], [well])
+        assert recorded["value"] == final_values_of(model, temperature)
+
+    def test_fracture_model_without_wells_records_null(
+        self, recorded_run: list[dict[str, Any]]
+    ) -> None:
+        iterations = [r for r in recorded_run if r["record_type"] == "iteration"]
+        assert all(record["wells"] is None for record in iterations)
+
+
+def final_values_of(model: pp.PorePyModel, variables: list) -> list[float]:
+    """The current values of the given variables."""
+    return model.equation_system.get_variable_values(
+        variables=variables, iterate_index=0
+    ).tolist()
 
 
 # Run in a subprocess so it can be killed outright. It imports this module rather than
