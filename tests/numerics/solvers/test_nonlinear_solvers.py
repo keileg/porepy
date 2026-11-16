@@ -436,6 +436,7 @@ def test_solve_convergence_statistics():
                     "final_convergence_status": {
                         "inc_abs": "converged",
                         "res_abs": "converged",
+                        "increment_not_capped": "converged",
                         "max_iter": "converged",
                         "inc_inf": "converged",
                         "res_inf": "converged",
@@ -450,6 +451,7 @@ def test_solve_convergence_statistics():
                     "convergence_status": {
                         "inc_abs": ["continue_iterating", "converged"],
                         "res_abs": ["continue_iterating", "converged"],
+                        "increment_not_capped": ["converged", "converged"],
                         "max_iter": ["converged", "converged"],
                         "inc_inf": ["converged", "converged"],
                         "res_inf": ["converged", "converged"],
@@ -603,6 +605,7 @@ def test_solve_failure_statistics():
                     "final_convergence_status": {
                         "inc_abs": "continue_iterating",
                         "res_abs": "continue_iterating",
+                        "increment_not_capped": "converged",
                         "max_iter": "converged",
                         "inc_inf": "failed",
                         "res_inf": "failed",
@@ -617,6 +620,7 @@ def test_solve_failure_statistics():
                     "convergence_status": {
                         "inc_abs": ["continue_iterating", "continue_iterating"],
                         "res_abs": ["continue_iterating", "continue_iterating"],
+                        "increment_not_capped": ["converged", "converged"],
                         "max_iter": ["converged", "converged"],
                         "inc_inf": ["converged", "failed"],
                         "res_inf": ["converged", "failed"],
@@ -1116,6 +1120,33 @@ def test_iteration_caps_increment_of_successful_solves_only(linear_solve_fails: 
 
     expected = history[0] if linear_solve_fails else np.zeros(1)
     assert np.array_equal(increment, expected)
+
+
+@pytest.mark.parametrize("first_increment_capped", [False, True])
+def test_capped_iteration_is_not_accepted_as_converged(first_increment_capped: bool):
+    """An iteration whose increment was capped does not converge, even when every
+    convergence criterion is met; the next, uncapped one does.
+
+    A failure means an iterate held on a variable bound can be accepted, with the
+    equation unbalanced where the Newton step was cut short.
+
+    """
+    # Both increments and residuals are within the tolerances of the default solver.
+    model = MockModel(residual_history=[0.5, 0.5])
+    solver = default_newton_solver(nonlinear_increment_history=[0.5, 0.5])
+    capped_iterations = {1} if first_increment_capped else set()
+
+    def cap_in_chosen_iterations(model, increment):
+        if solver.iteration_index in capped_iterations:
+            return increment / 2
+        return increment
+
+    solver.cap_increment_to_bounds = cap_in_chosen_iterations
+
+    status = solver.solve(model)
+
+    assert status.is_converged()
+    assert solver.iteration_index == (2 if first_increment_capped else 1)
 
 
 @pytest.fixture

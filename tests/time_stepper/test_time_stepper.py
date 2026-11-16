@@ -670,6 +670,7 @@ def test_solve_convergence_time_dependent_statistics(statistics_path: Path):
             "final_convergence_status": {
                 "crit1": "converged",
                 "crit2": "converged",
+                "increment_not_capped": "converged",
                 "max_iter": "converged",
                 "inc_inf": "converged",
                 "res_inf": "converged",
@@ -688,6 +689,7 @@ def test_solve_convergence_time_dependent_statistics(statistics_path: Path):
             "convergence_status": {
                 "crit1": ["converged", "converged"],
                 "crit2": ["continue_iterating", "converged"],
+                "increment_not_capped": ["converged", "converged"],
                 # Note that we both converge and fail, but the current logic treats it
                 # as success.
                 "max_iter": ["converged", "failed"],
@@ -709,6 +711,7 @@ def test_solve_convergence_time_dependent_statistics(statistics_path: Path):
             "convergence_status": {
                 "crit1": ["converged"],
                 "crit2": ["converged"],
+                "increment_not_capped": ["converged"],
                 "max_iter": ["converged"],
                 "inc_inf": ["converged"],
                 "res_inf": ["converged"],
@@ -793,6 +796,7 @@ def test_solve_failure_time_dependent_statistics(statistics_path: Path):
             "final_convergence_status": {
                 "crit1": "converged",
                 "crit2": "converged",
+                "increment_not_capped": "converged",
                 "max_iter": "converged",
                 "inc_inf": "converged",
                 "res_inf": "converged",
@@ -811,6 +815,7 @@ def test_solve_failure_time_dependent_statistics(statistics_path: Path):
             "convergence_status": {
                 "crit1": ["converged", "converged"],
                 "crit2": ["continue_iterating", "continue_iterating"],
+                "increment_not_capped": ["converged", "converged"],
                 "max_iter": ["converged", "failed"],
                 "inc_inf": ["converged", "converged"],
                 "res_inf": ["converged", "converged"],
@@ -830,6 +835,7 @@ def test_solve_failure_time_dependent_statistics(statistics_path: Path):
             "convergence_status": {
                 "crit1": ["converged", "converged"],
                 "crit2": ["continue_iterating", "continue_iterating"],
+                "increment_not_capped": ["converged", "converged"],
                 "max_iter": ["converged", "failed"],
                 "inc_inf": ["converged", "converged"],
                 "res_inf": ["converged", "converged"],
@@ -849,6 +855,7 @@ def test_solve_failure_time_dependent_statistics(statistics_path: Path):
             "convergence_status": {
                 "crit1": ["converged"],
                 "crit2": ["converged"],
+                "increment_not_capped": ["converged"],
                 "max_iter": ["converged"],
                 "inc_inf": ["converged"],
                 "res_inf": ["converged"],
@@ -868,6 +875,7 @@ def test_solve_failure_time_dependent_statistics(statistics_path: Path):
             "convergence_status": {
                 "crit1": ["converged"],
                 "crit2": ["converged"],
+                "increment_not_capped": ["converged"],
                 "max_iter": ["converged"],
                 "inc_inf": ["converged"],
                 "res_inf": ["converged"],
