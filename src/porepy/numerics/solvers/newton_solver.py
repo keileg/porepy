@@ -137,6 +137,12 @@ class NewtonSolver(NonlinearSolverBase):
             linear_solver = LinearSolverDirect(backend="pypardiso")
         self.linear_solver: LinearSolverBase = linear_solver
         """Linear solver object to solve the Jacobian linear systems."""
+        self.num_capped_dofs: int = 0
+        """Number of increment entries the latest iteration capped to their variable
+        bounds. An iteration with capped entries is never accepted as converged, see
+        :meth:`hold_convergence_while_capped`.
+
+        """
         self._linear_solver_initialized = False
         """Whether model-dependent linear solver state has been initialized.
         Initialization is done once at :meth:`solve`. It is now assumed that this class
@@ -608,10 +614,13 @@ class NewtonSolver(NonlinearSolverBase):
         )
         logger.debug(f"Assembled linear system in {time() - t_0:.2e} seconds.")
 
+        self.num_capped_dofs = 0
         increment, status = self.linear_solver.solve_linear_system(linear_system)
         if status.is_failure():
             return increment, status
-        return self.cap_increment_to_bounds(model, increment), status
+        capped = self.cap_increment_to_bounds(model, increment)
+        self.num_capped_dofs = int(np.count_nonzero(capped != increment))
+        return capped, status
 
     def cap_increment_to_bounds(
         self, model: pp.PorePyModel, increment: np.ndarray
@@ -769,6 +778,7 @@ class NewtonSolver(NonlinearSolverBase):
             residual=residual,
             iteration_index=self.iteration_index,
         )
+        convergence_status = self.hold_convergence_while_capped(convergence_status)
 
         # Logging and progress bar update.
         self.logging(convergence_info)
@@ -781,6 +791,39 @@ class NewtonSolver(NonlinearSolverBase):
         )
 
         return convergence_status, divergence_status, convergence_info, residual
+
+    def hold_convergence_while_capped(
+        self, convergence_status: ConvergenceStatusCollection
+    ) -> ConvergenceStatusCollection:
+        """Add the requirement that the latest increment was not capped.
+
+        The convergence criteria see the capped increment, in which an entry held on its
+        bound by a Newton step pointing outward is zero. Without this requirement an
+        iterate pinned to a bound, with its equation unbalanced there, could pass the
+        increment criteria and be accepted. A bound the true solution lies on is not
+        supported either way.
+
+        A solver without convergence criteria, as for a linear problem, accepts its
+        single iteration regardless: it has no iteration limit either, so holding it
+        would never end.
+
+        Parameters:
+            convergence_status: Status from the convergence criteria.
+
+        Returns:
+            The status with the entry ``increment_not_capped`` added: converged if no
+            entry was capped, otherwise continue iterating. Unchanged if empty.
+
+        """
+        if not convergence_status:
+            return convergence_status
+        held = ConvergenceStatusCollection(convergence_status)
+        held["increment_not_capped"] = (
+            ConvergenceStatus.CONVERGED
+            if self.num_capped_dofs == 0
+            else ConvergenceStatus.CONTINUE_ITERATING
+        )
+        return held
 
     def check_convergence(
         self,
