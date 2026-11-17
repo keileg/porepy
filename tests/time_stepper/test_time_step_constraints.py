@@ -7,6 +7,7 @@ import porepy as pp
 from porepy.time_stepper.time_step_constraint import (
     CannotRecomputeTimeStep,
     CourantTimeStepConstraint,
+    ScaledTargetNonlinearIterations,
 )
 from tests.time_stepper.test_scheduler import (
     get_context_failure,
@@ -116,3 +117,41 @@ def test_target_nonlinear_iterations(case: dict):
             _ = scheduler.compute_next_time_step(
                 time_manager=time_manager, success=success, context=context
             )
+
+
+@pytest.mark.parametrize(
+    "num_iterations, dt_min, expected_dt",
+    [
+        (0, 0.0, 10.0 * (1 + 1 / 1.2)),
+        (5, 0.0, 10.0 * (1 + 3 / 9.6)),
+        (8, 0.0, 10.0),
+        (9, 0.0, 10.0 * 8 / 9),
+        (16, 0.0, 5.0),
+        # A decrease after convergence stops at dt_min.
+        (16, 6.0, 6.0),
+    ],
+)
+def test_scaled_target_nonlinear_iterations(
+    num_iterations: int, dt_min: float, expected_dt: float
+):
+    """dt changes in proportion to how far the iterations are from the target, and more
+    strongly downwards than upwards. A failure most likely means the two branches of
+    the rule are swapped, or the decrease ignores dt_min.
+
+    """
+    constraint = ScaledTargetNonlinearIterations(target_iterations=8)
+    context = get_context_success(num_linear_iterations=num_iterations) | {
+        "dt_min": dt_min,
+        "t_snap": 1e-10,
+    }
+    assert np.isclose(constraint.suggest_dt(dt=10.0, context=context), expected_dt)
+
+
+def test_scaled_target_nonlinear_iterations_retries_as_the_range_rule():
+    """A failed attempt is cut by the retry factor, not scaled by its iterations."""
+    constraint = ScaledTargetNonlinearIterations(target_iterations=8, retry_factor=0.3)
+    context = get_context_failure(num_linear_iterations=20) | {
+        "dt_min": 0.0,
+        "t_snap": 1e-10,
+    }
+    assert np.isclose(constraint.suggest_dt(dt=10.0, context=context), 3.0)

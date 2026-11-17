@@ -1,7 +1,8 @@
 """Module defines constraints that adjust the simulation time step as a feedback to
-simulation behavior. Provides the base class `TimeStepConstraint` and two
+simulation behavior. Provides the base class `TimeStepConstraint` and three
 implementations:
 - TargetNonlinearIterations
+- ScaledTargetNonlinearIterations
 - CourantTimeStepConstraint
 
 
@@ -16,6 +17,7 @@ import porepy as pp
 __all__ = [
     "TimeStepConstraint",
     "TargetNonlinearIterations",
+    "ScaledTargetNonlinearIterations",
     "CourantTimeStepConstraint",
     "CannotRecomputeTimeStep",
 ]
@@ -130,6 +132,63 @@ class TargetNonlinearIterations(TimeStepConstraint):
                 return dt * self.retry_factor
             # Decrease dt but not smaller than dt_min.
             return max(dt * self.retry_factor, dt_min)
+
+
+class ScaledTargetNonlinearIterations(TargetNonlinearIterations):
+    """Scales dt by how far the number of nonlinear iterations is from a target.
+
+    Unlike :class:`TargetNonlinearIterations`, which changes dt by a fixed factor
+    whenever the iterations leave a range, the change grows with the distance from the
+    target, so one iteration too many costs less than five. After a converged step with
+    ``n`` iterations and target ``t``, the suggested dt is
+
+    - ``dt * t / n`` if ``n > t``, i.e. ``dt / (1 + (n - t) / t)``;
+    - ``dt * (1 + (t - n) / (1.2 * t))`` otherwise, at most ``dt * 11 / 6``.
+
+    Decreases are more aggressive than increases, since a failed attempt costs a full
+    nonlinear solve. The rule is the one of DuMux's Newton solver
+    (``NewtonSolver::suggestTimeStepSize`` in ``dumux/nonlinear/newtonsolver.hh``).
+
+    A decrease after convergence does not go below `dt_min`. Failed attempts are
+    handled as by :class:`TargetNonlinearIterations`.
+
+    Expects "nonlinear_solver_status" (:class:`pp.solvers.NonlinearSolverStatus`),
+    "t_snap" and "dt_min" in context.
+
+    Parameters:
+        target_iterations: The number of nonlinear iterations aimed at.
+        retry_factor: How much to decrease dt if the nonlinear solver failed.
+
+    """
+
+    def __init__(self, target_iterations: int = 6, retry_factor: float = 0.5) -> None:
+        if target_iterations < 1:
+            raise ValueError(f"Incorrect target iterations: {target_iterations}.")
+        super().__init__(
+            iter_min=target_iterations,
+            iter_max=target_iterations,
+            retry_factor=retry_factor,
+        )
+        self.target_iterations = target_iterations
+        """The number of nonlinear iterations aimed at."""
+
+    def suggest_dt(self, dt: float, context: dict) -> float:
+        status = context.get("nonlinear_solver_status")
+        if not (
+            isinstance(status, pp.solvers.NonlinearSolverStatus)
+            and status.is_converged()
+        ):
+            return super().suggest_dt(dt, context)
+        dt_min = context.get("dt_min")
+        if not isinstance(dt_min, (int, float)):
+            raise ValueError(
+                "ScaledTargetNonlinearIterations requires 'dt_min' in context."
+            )
+        num_iter = status.number_of_iterations()
+        target = self.target_iterations
+        if num_iter > target:
+            return max(dt * target / num_iter, dt_min)
+        return dt * (1 + (target - num_iter) / (1.2 * target))
 
 
 class CourantTimeStepConstraint(TimeStepConstraint):
